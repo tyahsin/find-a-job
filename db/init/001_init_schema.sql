@@ -17,7 +17,7 @@ CREATE TABLE position (
     title TEXT,
     department TEXT,
     responsibility TEXT, /* precompute：定版簡述，人工或LLM生成皆存在此欄位 */
-    responsibility_source TEXT DEFAULT NULL,  /* 原始資料連結/路徑；NULL代表無原文，簡述為LLM生成 */
+    responsibility_source TEXT DEFAULT NULL, /* 原始資料連結/路徑；NULL代表無原文，簡述為LLM生成 */
     start_date DATE,
     end_date DATE NULL
 );
@@ -49,8 +49,8 @@ CREATE TABLE project (
     end_date DATE NULL,
     project_context TEXT, /* tyahsin: the background of the project; why was it initiated amd why it's passed onto me */
     CHECK (
-        (position_id IS NOT NULL AND degree_id IS NULL) OR
-        (position_id IS NULL AND degree_id IS NOT NULL)
+    (position_id IS NOT NULL AND degree_id IS NULL) OR
+    (position_id IS NULL AND degree_id IS NOT NULL)
     )
 );
 
@@ -68,36 +68,51 @@ CREATE TABLE action (
     action_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     problem_id UUID REFERENCES problem(problem_id), /* 對應解決哪個問題 */
     description TEXT, /* 具體做了什麼 */
-    role_scope TEXT /* 主導/協同/支援 (Led/Collaborated/Supported) */ 
+    role_scope TEXT /* 主導/協同/支援 (Led/Collaborated/Supported) */
 );
 
-
 -- 結果/聲稱層 (Result/Claim)
+-- NOTE (Aug 2026): result_statement renamed to description for consistency
+-- with problem.description / action.description naming. value_type /
+-- metric / metric_confidence REMOVED from this table -- in practice a
+-- single claim was found to often carry more than one quantifiable metric,
+-- and not every metric cleanly fit these three fixed categories. Moved to
+-- the new claim_metric table below (one-to-many).
 CREATE TABLE claim (
     claim_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     action_id UUID REFERENCES action(action_id), /* 對應哪個行動產生此結果 */
-    result_statement TEXT, /* 結果敘述，CV bullet 的核心內容來源 */
-    value_type TEXT CHECK (
-        value_type IN ('revenue','cost','time','risk','process','team_enablement')
-    ), /* 商業價值類型：營收/成本/時間/風險/流程/團隊賦能 */
-    metric TEXT, /* 量化數字 */
-    metric_confidence TEXT /* 數字精確度：精確值/估算 */
+    description TEXT /* 結果敘述，CV bullet 的核心內容來源（原 result_statement） */
+);
+
+-- 量化指標層 (Claim Metric) -- 一個 claim 可能有多個指標，且不是所有指標
+-- 都能歸類到單一 value_type，因此拆成獨立子表 (one-to-many)。
+-- metric_confidence 一律由使用者人工判定，不採用 LLM 自報信心（LLM 自報
+-- 信心分數普遍缺乏校準，不可靠）。
+CREATE TABLE claim_metric (
+    metric_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    claim_id UUID REFERENCES claim(claim_id), /* 對應哪條結果聲稱 */
+    metric_type TEXT, /* 效率提升 / 成本節省 / 品質改善 / 其他 */
+    metric_label TEXT, /* 這個數字代表什麼，例如「處理時間」「客戶滿意度」 */
+    metric_value TEXT, /* 數值本身，含單位/描述，例如「從5天降到2天」「約15%」 */
+    metric_confidence TEXT /* 精確 / 估算 / 大致印象 -- 一律人工判定 */
 );
 
 -- 證據層
+-- NOTE: 一個 claim 可能有多筆證據（例如一筆 L1 直接檔案 + 一筆 L3 補充說明），
+-- 本表結構原本就支援一對多（claim_id 無 UNIQUE 限制），無需改動。
 CREATE TABLE evidence (
     evidence_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     claim_id UUID REFERENCES claim(claim_id), /* 對應哪條結果聲稱 */
-    evidence_type TEXT, /* 原始檔案/結構化紀錄/自述/推論 */ 
+    evidence_type TEXT, /* 原始檔案/結構化紀錄/自述/推論 */
     evidence_location TEXT, /* 檔案路徑或連結 */
-    evidence_level TEXT  /* L1-L4：單一證據本身的等級（多筆evidence可各自不同） */
-); 
+    evidence_level TEXT /* L1-L4，避免把自認為的問題包裝成正式任務 */
+);
 
 -- 治理層
 CREATE TABLE governance (
     metadata_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     claim_id UUID REFERENCES claim(claim_id), /* 對應哪條 claim */
-    support_level TEXT, /* 綜合證據強度分級 L1-L4 */ /* 一筆 claim 可能有多筆 evidence；support_level 取這些 evidence 中等級最高（最有力）的一筆作為代表 */
+    support_level TEXT, /* 綜合證據強度分級 L1-L4 */
     use_policy TEXT DEFAULT NULL, /* 使用限制，如僅限資深職缺/特定產業 */ -- 限制範圍（能不能用）
     notes_for_llm TEXT DEFAULT NULL, /* 給生成模型的操作指示 */ -- 操作指示（怎麼寫）
     allowed_for_generation BOOLEAN DEFAULT TRUE /* 是否允許進入生成候選池，治理層硬性開關 */
@@ -106,11 +121,11 @@ CREATE TABLE governance (
 -- 受控詞彙表：所有 tag 必須從這裡選，新增需人工確認
 CREATE TABLE tag (
     tag_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tag_name TEXT UNIQUE NOT NULL,               -- 標準寫法，唯一
+    tag_name TEXT UNIQUE NOT NULL, -- 標準寫法，唯一
     tag_category TEXT NOT NULL CHECK (
-        tag_category IN ('skill', 'domain', 'job_function')
+    tag_category IN ('skill', 'domain', 'job_function')
     ), -- 可轉移的能力, 產業領域知識, 職能類別
-    aliases TEXT[] DEFAULT '{}',                 -- 同義詞/其他措辭，供 fuzzy match 比對用
+    aliases TEXT[] DEFAULT '{}', -- 同義詞/其他措辭，供 fuzzy match 比對用
     created_at TIMESTAMP DEFAULT now(),
     updated_at TIMESTAMP
 );
@@ -126,9 +141,10 @@ CREATE TABLE claim_tag (
 CREATE TABLE claim_chunks ( /* 這段文字語意上跟 JD 有多相似 */
     chunk_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     claim_id UUID REFERENCES claim(claim_id),
-    content TEXT, /* 綜合上面table的資料生成將喂給embedding的data */
-    embedding VECTOR(1536) /* pgvector 相似度搜尋核心資料；維度需對應實際使用的embedding model */
-); /* tyahsin: what is the best structure for a pgvector-oriened table? */ 
+    support_level TEXT, /* 一筆claim可能有多筆evidence; 用support_level做加總平均 */
+    content TEXT, /* 這段文字語意上跟 JD 有多相似 */
+    embedding VECTOR(1536) /* pgvector 相似度搜尋的核心資料 */ /* tyahsin: why 1536? */
+); /* tyahsin: what is the best structure for a pgvector-oriened table? */
 /* tyahsin: 建議做法是 onboard 時仍生成一組「基礎/廣義」tags 作為預設候選（方便一般檢索與瀏覽），
 CV generation 時再讓 LLM 針對特定 JD 做「措辭轉譯」而非從零生成，這樣既保留了你要的靈活性，
 也避免每次都要從無到有分析整條 claim 全文的成本浪費*/

@@ -1,0 +1,8 @@
+typer[all]
+rich
+sqlalchemy>=2.0
+psycopg2-binary
+rapidfuzz
+litellm
+python-dotenv
+pypdf
