@@ -6,3 +6,5 @@ rapidfuzz
 litellm
 python-dotenv
 pypdf
+typst
+rendercv[full]

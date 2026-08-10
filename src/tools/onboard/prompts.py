@@ -40,8 +40,10 @@ _BASE_SYSTEM_RULES = """你是一個協助整理個人職涯與學業經歷的�
 RESPONSIBILITY_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
 這段摘要的用途：描述使用者在某個職位期間的職責範圍（position.responsibility）。
 摘要應該是客觀的職責描述，不是成就敘述（成就會在其他地方單獨處理），
-長度建議在2到4句話之間。
+結果必須以英文呈現。
 """
+# 長度建議在2到4句話之間。
+# """
 
 
 def build_responsibility_prompt_from_source(source_text: str) -> str:
@@ -72,7 +74,7 @@ def build_responsibility_prompt_from_description(user_description: str) -> str:
 ---
 {user_description}
 ---
-
+結果必須以英文呈現。
 請輸出摘要（純文字，不要加任何前言）："""
 
 
@@ -84,8 +86,10 @@ PROJECT_CONTEXT_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
 這段摘要的用途：描述一個專案發生的背景與情境（project.project_context），
 說明這個專案是在什麼狀況下產生的、屬於什麼類型的專案。
 這不是成果敘述（成果會透過problem/action/result_claim另外處理），
-長度建議在1到3句話之間，簡潔即可。
+結果必須以英文呈現。
 """
+# 長度建議在1到3句話之間簡潔呈現。
+# """
 
 
 def build_project_context_prompt(user_description: str) -> str:
@@ -109,9 +113,10 @@ def build_project_context_prompt(user_description: str) -> str:
 PROBLEM_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
 這段摘要的用途：描述這個專案中遇到的具體問題（problem.description），
 說明「當時面臨什麼狀況/困難/缺口」，不要描述任何解決方式（那是 action 的職責）。
-長度建議在1到2句話之間。
+結果必須以英文呈現。
 """
-
+# 長度建議在1到2句話之間。
+# """
 
 def build_problem_prompt(user_description: str) -> str:
     return f"""使用者描述了這個專案中遇到的問題，請整理成一段簡潔的問題敘述：
@@ -131,8 +136,10 @@ ACTION_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
 這段摘要的用途：描述使用者針對前述問題「做了什麼」（action.description），
 只描述具體採取的行動、方法、或介入方式，不要描述行動帶來的結果或影響
 （那是 result_claim 的職責）。
-長度建議在1到2句話之間。
+結果必須以英文呈現。
 """
+# 長度建議在1到2句話之間。
+# """
 
 
 def build_action_prompt(user_description: str) -> str:
@@ -157,8 +164,10 @@ RESULT_CLAIM_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
 這段摘要的用途：描述一個具體行動（action）所帶來的「結果」（claim.description）。
 只描述結果本身 -- 例如數據變化、產出、影響、效率提升、被驗收/採用的狀態等。
 不要重複描述「做了什麼」（那是 action 的職責），只描述「做了之後發生了什麼」。
-長度建議在1到2句話之間，愈精簡愈好。
+結果必須以英文呈現。
 """
+# 長度建議在1到2句話之間，愈精簡愈好。
+# """
 
 
 def build_result_claim_prompt(user_description: str) -> str:

@@ -39,15 +39,19 @@ from typing import Iterator, Optional, Sequence, Type, TypeVar
 
 from rapidfuzz import fuzz, process
 from sqlalchemy import (
+    ARRAY,
+    Boolean,
     CheckConstraint,
     Column,
     Date,
+    DateTime,
     ForeignKey,
     Text,
     create_engine,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.sql import func
 
 from core.config import get_db_config
 
@@ -271,6 +275,58 @@ class ClaimTagORM(Base):
     claim_id = Column(PGUUID(as_uuid=True), ForeignKey("claim.claim_id"), primary_key=True)
     tag_id = Column(PGUUID(as_uuid=True), ForeignKey("tag.tag_id"), primary_key=True)
 
+# ---------------------------------------------------------------------------
+# 治理層 (Governance) -- belongs to a claim
+# ---------------------------------------------------------------------------
+
+class GovernanceORM(Base):
+    __tablename__ = "governance"
+
+    metadata_id = _uuid_pk()
+    claim_id = Column(PGUUID(as_uuid=True), ForeignKey("claim.claim_id"))
+    support_level = Column(Text)          # 綜合證據強度分級 L1-L4
+    use_policy = Column(Text, nullable=True)       # 使用限制,如僅限資深職缺/特定產業
+    notes_for_llm = Column(Text, nullable=True)    # 給生成模型的操作指示
+    allowed_for_generation = Column(Boolean, default=True)  # 治理層硬性開關
+
+
+# ---------------------------------------------------------------------------
+# 向量索引層 (Claim Chunks) -- pgvector,belongs to a claim
+# ---------------------------------------------------------------------------
+# 注意:VECTOR 型別需要 pgvector-sqlalchemy 套件的 Vector column type。
+# 若尚未安裝 `pip install pgvector`,先用下方 fallback(Text)存放,
+# 之後安裝好套件再把 embedding 欄位換成 Vector(1536)。
+
+try:
+    from pgvector.sqlalchemy import Vector
+    _EMBEDDING_COLUMN = Column(Vector(1536))
+except ImportError:
+    _EMBEDDING_COLUMN = Column(Text)  # fallback,尚未安裝 pgvector-sqlalchemy
+
+
+class ClaimChunkORM(Base):
+    __tablename__ = "claim_chunks"
+
+    chunk_id = _uuid_pk()
+    claim_id = Column(PGUUID(as_uuid=True), ForeignKey("claim.claim_id"))
+    support_level = Column(Text, nullable=True)  # 一筆 claim 可能有多筆 evidence,用此做加總平均
+    content = Column(Text)
+    embedding = _EMBEDDING_COLUMN
+
+
+# ---------------------------------------------------------------------------
+# 輸出追蹤層 (Generated Outputs) -- 對應第 5 步 apply 後的 log/tracker
+# ---------------------------------------------------------------------------
+
+class GeneratedOutputORM(Base):
+    __tablename__ = "generated_outputs"
+
+    output_id = _uuid_pk()
+    jd_reference = Column(Text)
+    used_claim_ids = Column(ARRAY(PGUUID(as_uuid=True)))
+    output_type = Column(Text)
+    generated_date = Column(DateTime, server_default=func.now())
+    human_review_status = Column(Boolean, default=False)
 
 # ---------------------------------------------------------------------------
 # Generic select-or-create helper (exact match)
