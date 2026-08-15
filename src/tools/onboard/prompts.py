@@ -1,5 +1,21 @@
 """
 onboard/prompts.py
+Version: v1.2 (2026-08-10)
+
+Changelog:
+- v1.2 (2026-08-10): Full English-only pass. EVIDENCE_TYPE_TO_LEVEL and
+  METRIC_CONFIDENCE_OPTIONS (previously left in Chinese as "human-selected,
+  never LLM output") converted to English per the project-wide decision
+  that the ENTIRE system -- every prompt and every interface element --
+  must be English-only, with no exceptions carved out for fields that
+  happen not to be LLM output.
+- v1.1 (2026-08-10, earlier same-day revision): _BASE_SYSTEM_RULES,
+  TAG_SYSTEM_PROMPT, and METRIC_EXTRACTION_SYSTEM_PROMPT (+
+  VALUE_TYPE_OPTIONS/METRIC_TYPE_OPTIONS) converted to English. Fixed the
+  root contradiction where _BASE_SYSTEM_RULES demanded Chinese output while
+  individual prompts separately bolted on "must be in English".
+- v1.0 (2026-08-04, inferred): Original Chinese-language prompt templates.
+
 Prompt templates used by the onboard CLI flows to draft:
 - position.responsibility (from a source file OR from a spoken/typed summary)
 - project.project_context (from a short user-provided description)
@@ -12,6 +28,27 @@ rephrases/organizes what the user already provided. It must NOT invent
 responsibilities, scope, dates, or achievements that aren't present in the
 input. All drafts are shown to the user for confirmation/edit before being
 persisted (precompute-once, human-reviewed).
+
+LANGUAGE POLICY (final, v1.2): the entire onboard/CV-generation system --
+every LLM prompt AND every user-facing interface element (CLI prompts,
+menu options, fixed-choice vocabularies) -- is English-only. This covers:
+  - the five narrative description prompts (_BASE_SYSTEM_RULES)
+  - tag_name in TAG_SYSTEM_PROMPT
+  - all three fields extracted by METRIC_EXTRACTION_SYSTEM_PROMPT
+  - VALUE_TYPE_OPTIONS / METRIC_TYPE_OPTIONS (LLM output AND human-selected
+    CLI menu, same list)
+  - EVIDENCE_TYPE_TO_LEVEL (human-selected CLI menu)
+  - METRIC_CONFIDENCE_OPTIONS (human-selected CLI menu)
+  - ROLE_SCOPE_OPTIONS (already English, unchanged)
+
+MIGRATION NOTE: EVIDENCE_TYPE_TO_LEVEL, VALUE_TYPE_OPTIONS/
+METRIC_TYPE_OPTIONS, and METRIC_CONFIDENCE_OPTIONS all changed their
+string values from Chinese to English across v1.1/v1.2. Any already-
+persisted rows (evidence.evidence_type, claim_metric.metric_type,
+claim_metric.metric_confidence) using the old Chinese values will not
+match these new English option lists or parse_metric_response's
+valid_types set -- check/backfill existing data if any exists before
+relying on exact-match logic against it.
 """
 
 from __future__ import annotations
@@ -20,17 +57,27 @@ from __future__ import annotations
 # Shared system-level guardrails
 # ---------------------------------------------------------------------------
 
-_BASE_SYSTEM_RULES = """你是一個協助整理個人職涯與學業經歷的寫作助手。你的任務是把使用者提供的原始素材，
-整理成一段簡潔、清楚、專業的中文摘要文字。
+_BASE_SYSTEM_RULES = """You are a writing assistant that helps organize a person's career and
+education experience for resume/CV purposes. Your task is to take the raw
+material the user provides and turn it into a concise, clear, professional
+ENGLISH summary.
 
-嚴格規則（必須遵守）：
-1. 不得新增任何使用者提供的素材中沒有出現過的具體事實、數字、職責範圍或成就。
-2. 不得將不確定或模糊的描述，改寫成語氣更確定、更誇大的說法。
-3. 不得推測、延伸使用者沒有明確提到的技能、職責或貢獻範圍。
-4. 只能做以下事情：語句重組、用詞潤飾、去除贅字、統一語氣、提升可讀性。
-5. 若原始素材內容過於簡短或模糊，摘要也應維持同等程度的簡短與模糊，不要自行「補完」。
+Strict rules (must follow):
+1. Do not add any concrete fact, number, scope of responsibility, or
+   achievement that does not already appear in the user-provided material.
+2. Do not rewrite uncertain or vague statements into more confident or
+   exaggerated ones.
+3. Do not infer or extend any skill, responsibility, or scope of
+   contribution the user did not explicitly mention.
+4. You may only: reorganize sentences, polish word choice, remove filler
+   words, unify tone, and improve readability.
+5. If the original material is too short or vague, the summary should stay
+   equally short/vague -- do not "fill in the gaps" yourself.
+6. Output must be written in English, no matter what language the user's
+   input material is written in.
 
-輸出格式：只輸出摘要本身的純文字，不要加任何前言、標題、或說明性文字。
+Output format: output ONLY the summary text itself, plain text, with no
+preamble, heading, or explanatory text.
 """
 
 # ---------------------------------------------------------------------------
@@ -38,12 +85,12 @@ _BASE_SYSTEM_RULES = """你是一個協助整理個人職涯與學業經歷的�
 # ---------------------------------------------------------------------------
 
 RESPONSIBILITY_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
-這段摘要的用途：描述使用者在某個職位期間的職責範圍（position.responsibility）。
-摘要應該是客觀的職責描述，不是成就敘述（成就會在其他地方單獨處理），
-結果必須以英文呈現。
+Purpose of this summary: describe the scope of responsibilities the user
+held during a given position (position.responsibility). It should be an
+objective description of duties, not an achievement narrative (achievements
+are handled separately elsewhere).
+Suggested length: 2-4 sentences.
 """
-# 長度建議在2到4句話之間。
-# """
 
 
 def build_responsibility_prompt_from_source(source_text: str) -> str:
@@ -52,14 +99,15 @@ def build_responsibility_prompt_from_source(source_text: str) -> str:
     via responsibility_source. The LLM summarizes the ACTUAL document
     content -- it must not add responsibilities beyond what's written.
     """
-    return f"""以下是使用者提供的原始文件內容（可能是職位說明書、offer letter等），
-請將其中關於「職責範圍」的部分整理成一段簡潔摘要：
+    return f"""Below is the raw document content provided by the user (may be a
+position description, offer letter, etc.). Please summarize the part
+about "scope of responsibilities" into a concise summary:
 
 ---
 {source_text}
 ---
 
-請輸出摘要（純文字，不要加任何前言）："""
+Output the summary (plain text, no preamble):"""
 
 
 def build_responsibility_prompt_from_description(user_description: str) -> str:
@@ -68,14 +116,16 @@ def build_responsibility_prompt_from_description(user_description: str) -> str:
     description of their responsibilities. The LLM only polishes wording;
     it must not add scope beyond what the user described.
     """
-    return f"""使用者用自己的話描述了這個職位的職責範圍，內容可能較口語或簡短，
-請將其整理成一段簡潔、professional的摘要，但不要新增使用者沒有提到的內容：
+    return f"""The user described the scope of responsibilities for this position in
+their own words; the content may be casual or brief. Please organize it
+into a concise, professional summary without adding anything the user
+did not mention:
 
 ---
 {user_description}
 ---
-結果必須以英文呈現。
-請輸出摘要（純文字，不要加任何前言）："""
+
+Output the summary (plain text, no preamble):"""
 
 
 # ---------------------------------------------------------------------------
@@ -83,13 +133,12 @@ def build_responsibility_prompt_from_description(user_description: str) -> str:
 # ---------------------------------------------------------------------------
 
 PROJECT_CONTEXT_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
-這段摘要的用途：描述一個專案發生的背景與情境（project.project_context），
-說明這個專案是在什麼狀況下產生的、屬於什麼類型的專案。
-這不是成果敘述（成果會透過problem/action/result_claim另外處理），
-結果必須以英文呈現。
+Purpose of this summary: describe the background/context in which a
+project arose (project.project_context) -- what situation produced this
+project and what kind of project it is. This is NOT an outcome narrative
+(outcomes are handled separately via problem/action/result_claim).
+Suggested length: 1-3 sentences.
 """
-# 長度建議在1到3句話之間簡潔呈現。
-# """
 
 
 def build_project_context_prompt(user_description: str) -> str:
@@ -97,13 +146,14 @@ def build_project_context_prompt(user_description: str) -> str:
     Use for drafting project.project_context from the user's short,
     free-text description of the project's background.
     """
-    return f"""使用者簡述了一個專案的背景/情境，請將其整理成一段簡潔的專案背景敘述：
+    return f"""The user briefly described the background/context of a project. Please
+organize it into a concise project background narrative:
 
 ---
 {user_description}
 ---
 
-請輸出摘要（純文字，不要加任何前言）："""
+Output the summary (plain text, no preamble):"""
 
 
 # ---------------------------------------------------------------------------
@@ -111,21 +161,22 @@ def build_project_context_prompt(user_description: str) -> str:
 # ---------------------------------------------------------------------------
 
 PROBLEM_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
-這段摘要的用途：描述這個專案中遇到的具體問題（problem.description），
-說明「當時面臨什麼狀況/困難/缺口」，不要描述任何解決方式（那是 action 的職責）。
-結果必須以英文呈現。
+Purpose of this summary: describe the concrete problem encountered within
+this project (problem.description) -- what situation/difficulty/gap
+existed at the time. Do not describe any solution (that's action's job).
+Suggested length: 1-2 sentences.
 """
-# 長度建議在1到2句話之間。
-# """
+
 
 def build_problem_prompt(user_description: str) -> str:
-    return f"""使用者描述了這個專案中遇到的問題，請整理成一段簡潔的問題敘述：
+    return f"""The user described a problem encountered in this project. Please organize
+it into a concise problem statement:
 
 ---
 {user_description}
 ---
 
-請輸出摘要（純文字，不要加任何前言）："""
+Output the summary (plain text, no preamble):"""
 
 
 # ---------------------------------------------------------------------------
@@ -133,52 +184,53 @@ def build_problem_prompt(user_description: str) -> str:
 # ---------------------------------------------------------------------------
 
 ACTION_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
-這段摘要的用途：描述使用者針對前述問題「做了什麼」（action.description），
-只描述具體採取的行動、方法、或介入方式，不要描述行動帶來的結果或影響
-（那是 result_claim 的職責）。
-結果必須以英文呈現。
+Purpose of this summary: describe what the user actually DID about the
+problem above (action.description) -- only the concrete action, method, or
+intervention taken. Do not describe the outcome/impact of the action
+(that's result_claim's job).
+Suggested length: 1-2 sentences.
 """
-# 長度建議在1到2句話之間。
-# """
 
 
 def build_action_prompt(user_description: str) -> str:
-    return f"""使用者描述了針對這個問題採取的行動，請整理成一段簡潔的行動敘述：
+    return f"""The user described the action taken to address this problem. Please
+organize it into a concise action statement:
 
 ---
 {user_description}
 ---
 
-請輸出摘要（純文字，不要加任何前言）："""
+Output the summary (plain text, no preamble):"""
 
 
 # ---------------------------------------------------------------------------
 # claim.description
 # ---------------------------------------------------------------------------
-# NOTE: previously this prompt's Chinese wording ("請描述這個結果") overlapped
-# semantically with action's wording, causing user confusion about which
-# layer they were filling in. This version explicitly draws the boundary:
-# description = what happened AFTER the action, not the action itself.
+# NOTE: previously this prompt's wording overlapped semantically with
+# action's wording, causing user confusion about which layer they were
+# filling in. This version explicitly draws the boundary: description =
+# what happened AFTER the action, not the action itself.
 
 RESULT_CLAIM_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
-這段摘要的用途：描述一個具體行動（action）所帶來的「結果」（claim.description）。
-只描述結果本身 -- 例如數據變化、產出、影響、效率提升、被驗收/採用的狀態等。
-不要重複描述「做了什麼」（那是 action 的職責），只描述「做了之後發生了什麼」。
-結果必須以英文呈現。
+Purpose of this summary: describe the RESULT that followed from a
+specific action (claim.description). Describe only the result itself --
+e.g. data changes, deliverables, impact, efficiency gains, being
+accepted/adopted, etc. Do not repeat "what was done" (that's action's
+job) -- only describe "what happened after it was done".
+Suggested length: 1-2 sentences, as concise as possible.
 """
-# 長度建議在1到2句話之間，愈精簡愈好。
-# """
 
 
 def build_result_claim_prompt(user_description: str) -> str:
-    return f"""使用者描述了這個行動帶來的結果，請整理成一段簡潔的結果敘述
-（只描述結果，不要重複行動本身）：
+    return f"""The user described the result produced by this action. Please organize
+it into a concise result statement (describe only the result, do not
+repeat the action itself):
 
 ---
 {user_description}
 ---
 
-請輸出摘要（純文字，不要加任何前言）："""
+Output the summary (plain text, no preamble):"""
 
 
 # ---------------------------------------------------------------------------
@@ -190,18 +242,20 @@ def build_result_claim_prompt(user_description: str) -> str:
 # might be graded L2 today and L3 next month). Instead, the CLI presents a
 # fixed menu of evidence types, and evidence_level is derived automatically.
 #
+# This is a human-selected fixed menu (never LLM output). Converted to
+# English in v1.2 per the "whole system, no exceptions" policy.
+
 # L1 = strongest (verifiable, third-party or system-of-record evidence)
 # L4 = weakest (unverifiable, self-reported recollection)
 
 EVIDENCE_TYPE_TO_LEVEL: dict[str, str] = {
-    "正式文件（合約/正式報告/系統截圖）": "L1",
-    "第三方驗證（主管評語/客戶回饋/正式考核）": "L1",
-    "數據紀錄（分析報表/系統 log/dashboard）": "L2",
-    "團隊內部文件（會議紀錄/email/Slack 對話）": "L2",
-    "口頭轉述/回憶（無書面紀錄，僅個人記憶）": "L3",
-    "推測/估算（合理推論但無直接證據支持）": "L4",
+    "Formal documentation (contract / official report / system screenshot)": "L1",
+    "Third-party verification (manager review / client feedback / formal evaluation)": "L1",
+    "Data record (analytics report / system log / dashboard)": "L2",
+    "Internal team documentation (meeting notes / email / Slack conversation)": "L2",
+    "Verbal account / recollection (no written record, memory only)": "L3",
+    "Inference / estimate (reasonable inference without direct evidence)": "L4",
 }
-
 
 # ---------------------------------------------------------------------------
 # tag generation (Problem 1 & 2 & 3 from Aug 2026 review)
@@ -212,21 +266,40 @@ EVIDENCE_TYPE_TO_LEVEL: dict[str, str] = {
 # re-pastes anything) and proposes a set of tags. The user then
 # confirms/edits the proposed list (not a yes/no gate -- tagging itself is
 # a mandatory step of add-claim, only the exact tag content is adjustable).
+#
+# LANGUAGE POLICY: tag_name must be English, no exceptions. Tags exist
+# specifically to be matched against job descriptions (JD) at CV-generation
+# time, and JDs are overwhelmingly in English for this user's target roles
+# -- Chinese tags would silently fail to match and break the whole matching
+# step.
 
-TAG_SYSTEM_PROMPT = """你是一個協助整理職涯經歷標籤的助手。根據使用者提供的問題、行動、結果、證據描述，
-以及這筆經歷所連結的背景資訊（公司/職位或學校/學位），產生一組精簡的標籤，用於未來 CV 生成時比對職缺說明（JD）。
+TAG_SYSTEM_PROMPT = """You are an assistant that helps organize tags for a person's career
+experience, for later matching against job descriptions (JD).
 
-嚴格規則（必須遵守）：
-1. 標籤必須是輸入內容（含背景資訊）中確實體現的技能、領域、或職能，不得憑空發明未出現過的能力。
-   背景資訊只能用來輔助判斷 domain（例如公司產業）或 job_function（例如職稱），
-   不能單獨依據背景資訊生成 skill 標籤（skill 必須有 problem/action/result 文字佐證）。
-2. 每個標籤只能屬於以下三種類別之一：skill（技能，例如 Python、資料分析）、
-   domain（領域，例如 金融、教育科技）、job_function（職能，例如 產品管理、資料工程）。
-3. 標籤命名要精簡、通用、可重複使用（例如用「資料分析」而非「用 pandas 做資料清理跟分析」）。
-4. 最多產生8個標籤，寧可少不要浮誇。
+CRITICAL RULE -- read first: every tag_name you output MUST be written in
+English. This applies no matter what language the problem/action/result
+text below is written in. Do not output Chinese, pinyin, or any
+non-English tag_name under any circumstance.
 
-輸出格式：每行一個標籤，格式為 "標籤名稱 | 類別"（類別只能是 skill/domain/job_function）。
-不要加任何前言、說明文字、或多餘的標點符號。
+Other strict rules (must follow):
+1. Tags must be skills, domains, or job functions that are actually
+   demonstrated in the input content (including the background context) --
+   do not invent capabilities that don't appear there. Background context
+   may only be used to help infer "domain" (e.g. company industry) or
+   "job_function" (e.g. job title); it must NOT be used on its own to
+   generate a "skill" tag (a skill tag must be backed by the
+   problem/action/result text).
+2. Each tag belongs to exactly one of three categories: skill (e.g.
+   "Python", "Data Analysis"), domain (e.g. "Fintech", "EdTech"), or
+   job_function (e.g. "Product Management", "Data Engineering").
+3. Tag names should be concise, generic, and reusable (e.g. "Data
+   Analysis" rather than "Used pandas to clean and analyze data").
+4. Produce at most 8 tags -- fewer and precise is better than many and
+   inflated.
+
+Output format: one tag per line, formatted as "tag_name | category", where
+tag_name is in English and category is one of skill/domain/job_function.
+No preamble, explanatory text, or extra punctuation.
 """
 
 
@@ -248,18 +321,26 @@ def build_tag_prompt(
     upstream from the claim -> action -> problem -> project -> position/
     degree -> company/school chain. Including this lets the LLM infer
     domain/job_function tags that are implied by *where* the work happened
-    (e.g. "金融" from company industry, "資料工程" from job title) even when
-    that context isn't explicitly repeated in the problem/action/result text.
+    (e.g. "Fintech" from company industry, "Data Engineering" from job
+    title) even when that context isn't explicitly repeated in the
+    problem/action/result text. The caller (cli.py._build_static_context)
+    formats this string in English too, so no Chinese leaks into this
+    prompt.
     """
-    context_block = f"\n背景資訊（公司/職位或學校/學位）：{static_context}\n" if static_context else ""
-    return f"""以下是這一筆經歷紀錄的完整內容：
+    context_block = (
+        f"\\nBackground context (company/position or school/degree): {static_context}\\n"
+        if static_context
+        else ""
+    )
+    return f"""Below is the full content of this experience record:
 {context_block}
-問題：{problem_description}
-行動：{action_description}
-結果：{description}
-證據類型：{evidence_type}
+Problem: {problem_description}
+Action: {action_description}
+Result: {description}
+Evidence type: {evidence_type}
 
-請根據以上內容（包含背景資訊）產生標籤（格式：標籤名稱 | 類別）："""
+Based on the above (including background context), produce tags. Remember:
+tag_name MUST be in English (format: tag_name | category):"""
 
 
 def parse_tag_response(raw_text: str) -> list[tuple[str, str]]:
@@ -286,6 +367,18 @@ def parse_tag_response(raw_text: str) -> list[tuple[str, str]]:
 # fixed-choice menus (Aug 2026 update: role_scope / value_type /
 # metric_confidence should be selected from a list, not free-typed)
 # ---------------------------------------------------------------------------
+# ROLE_SCOPE_OPTIONS: human-selected fixed menu, already English.
+#
+# VALUE_TYPE_OPTIONS / METRIC_TYPE_OPTIONS: English (v1.1). This list is
+# used BOTH as the set of values METRIC_EXTRACTION_SYSTEM_PROMPT asks the
+# LLM to choose from, AND as the human-facing CLI menu in
+# cli.py._review_metric_drafts() when the user manually adds a metric the
+# LLM missed -- one list serves both call sites.
+#
+# METRIC_CONFIDENCE_OPTIONS: English (v1.2). Still never LLM output --
+# confidence is always a manual human choice from this fixed CLI menu (LLM
+# self-reported confidence is known to be poorly calibrated, see
+# METRIC_EXTRACTION_SYSTEM_PROMPT rule 3).
 
 ROLE_SCOPE_OPTIONS: list[str] = [
     "Led",
@@ -293,30 +386,22 @@ ROLE_SCOPE_OPTIONS: list[str] = [
     "Supported",
 ]
 
-# NOTE (Aug 2026): these options must come strictly from the classification
-# already defined for their related columns in prompts.py / schema notes --
-# not invented additions. value_type mirrors the exact three categories
-# given in the original description prompt wording (效率提升/成本節省/
-# 品質改善); metric_confidence mirrors the exact three categories given in
-# the original metric_confidence prompt wording (精確/估算/大致印象).
-
 VALUE_TYPE_OPTIONS: list[str] = [
-    "效率提升",
-    "成本節省",
-    "品質改善",
+    "Efficiency Improvement",
+    "Cost Saving",
+    "Quality Improvement",
 ]
 
-# metric_type reuses the same three categories plus "其他" for metrics that
-# don't cleanly fit (this is exactly the gap that motivated splitting
+# metric_type reuses the same three categories plus "Other" for metrics
+# that don't cleanly fit (this is exactly the gap that motivated splitting
 # metrics out into their own claim_metric table).
-METRIC_TYPE_OPTIONS: list[str] = VALUE_TYPE_OPTIONS + ["其他"]
+METRIC_TYPE_OPTIONS: list[str] = VALUE_TYPE_OPTIONS + ["Other"]
 
 METRIC_CONFIDENCE_OPTIONS: list[str] = [
-    "精確",
-    "估算",
-    "大致印象",
+    "Precise",
+    "Estimated",
+    "Rough impression",
 ]
-
 
 # ---------------------------------------------------------------------------
 # claim_metric extraction (Aug 2026 update)
@@ -326,44 +411,66 @@ METRIC_CONFIDENCE_OPTIONS: list[str] = [
 # (LLM self-reported confidence is known to be poorly calibrated). The user
 # always reviews/edits the extracted draft, and metric_confidence is always
 # a manual human selection from METRIC_CONFIDENCE_OPTIONS, never LLM output.
+#
+# LANGUAGE POLICY: all three extracted fields (type, label, value) are
+# required to be English. type comes from the English METRIC_TYPE_OPTIONS
+# above; label/value inherit English naturally once claim.description
+# itself is generated in English, but the rule is stated explicitly here
+# too as a defensive guarantee.
 
-METRIC_EXTRACTION_SYSTEM_PROMPT = """你的任務是從一段結果敘述（description）中，抽取所有可量化的指標。
+METRIC_EXTRACTION_SYSTEM_PROMPT = """Your task is to extract all quantifiable metrics from a result
+description (description).
 
-嚴格規則（必須遵守）：
-1. 只抽取文字中明確出現的數字/量化描述，不得推測、估算、或發明文字中沒寫出來的數據。
-2. 每個指標輸出三個欄位：類型、標籤、數值。
-   - 類型只能是「效率提升」「成本節省」「品質改善」「其他」四種之一，抓不進前三類就用「其他」。
-   - 標籤：這個數字實際代表什麼（例如「處理時間」「客戶滿意度」），用精簡詞語描述。
-   - 數值：把原文中的數字/描述完整保留（例如「從5天降到2天」「約15%」）。
-3. 不要輸出信心程度，信心程度由使用者自行判斷，與你無關。
-4. 如果這段文字沒有任何可量化指標，回傳空白（不輸出任何行）。
+CRITICAL RULE -- read first: every field you output (type, label, value)
+MUST be written in English, no matter what language the source description
+is written in.
 
-輸出格式：每行一組，用 | 分隔：類型|標籤|數值
-不要加任何前言、說明文字、或多餘的標點符號。
+Other strict rules (must follow):
+1. Only extract numbers/quantified statements explicitly present in the
+   text -- do not guess, estimate, or invent data not written in the text.
+2. Output three fields per metric: type, label, value.
+   - type must be exactly one of: "Efficiency Improvement", "Cost Saving",
+     "Quality Improvement", or "Other" -- use "Other" if it doesn't fit the
+     first three. Do not translate or reword these four labels.
+   - label: what the number actually represents (e.g. "processing time",
+     "customer satisfaction"), described concisely, in English.
+   - value: keep the original number/description intact but in English
+     (e.g. "reduced from 5 days to 2 days", "about 15%").
+3. Do not output a confidence level -- confidence is judged by the user
+   manually and is not your concern.
+4. If the text contains no quantifiable metric at all, return blank
+   (output no lines).
+
+Output format: one entry per line, separated by |: type|label|value
+No preamble, explanatory text, or extra punctuation.
 """
 
 
 def build_metric_extraction_prompt(description: str) -> str:
-    return f"""以下是這筆 claim 的結果敘述：
+    return f"""Below is the result description (description) for this claim:
 
 {description}
 
-請抽取其中所有可量化的指標（格式：類型|標籤|數值）："""
+Extract all quantifiable metrics from it. Remember: type/label/value must
+all be in English (format: type|label|value):"""
 
 
 def parse_metric_response(raw_text: str) -> list[tuple[str, str, str]]:
     """
-    Parses lines like "效率提升|處理時間|從5天降到2天" into
-    (metric_type, metric_label, metric_value) tuples. Skips malformed lines
-    rather than raising, since this is an LLM draft the user reviews anyway.
+    Parses lines like "Efficiency Improvement|processing time|reduced from
+    5 days to 2 days" into (metric_type, metric_label, metric_value)
+    tuples. Skips malformed lines rather than raising, since this is an
+    LLM draft the user reviews anyway.
     """
-    valid_types = {"效率提升", "成本節省", "品質改善", "其他"}
+    valid_types = {"Efficiency Improvement", "Cost Saving", "Quality Improvement", "Other"}
     results: list[tuple[str, str, str]] = []
     for line in raw_text.strip().splitlines():
         line = line.strip()
         if not line or line.count("|") != 2:
             continue
-        metric_type, metric_label, metric_value = (part.strip() for part in line.split("|"))
+        metric_type, metric_label, metric_value = (
+            part.strip() for part in line.split("|")
+        )
         if metric_type not in valid_types or not metric_label or not metric_value:
             continue
         results.append((metric_type, metric_label, metric_value))

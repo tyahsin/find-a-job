@@ -1,78 +1,106 @@
 """
 experience_matcher.py
-JD -> 判斷哪些過往經歷跟這個職缺相關,決定要納入這次履歷的候選清單。
-含共用查詢工具:一次性把 claim -> action -> problem -> project -> position/company
-(或 degree/school)的完整背景資訊撈出來。
+Version: v2 (2026-08-12)
 
-core/db.py 的 ORM models 只用 Column(ForeignKey(...)) 建立外鍵約束,沒有定義
-relationship(),因此無法用 claim.action.problem... 這種屬性鏈存取,必須明確寫 JOIN 查詢。
+Changelog:
+- v2 (2026-08-12): Fixed two gaps between this file's actual behavior and the
+  intended design recorded in project notes:
+  1. Governance filtering (_resolve_candidate_ids, replaces the old
+     _allowed_governance): previously only claims WITH a governance row AND
+     allowed_for_generation = True were kept, silently excluding every claim
+     that predates the governance layer (no governance row at all). Now the
+     candidate pool = all claims, MINUS claims with an explicit
+     allowed_for_generation = False. Claims with no governance row default to
+     allowed, matching the schema's allowed_for_generation BOOLEAN DEFAULT
+     TRUE design intent.
+  2. Tag signal (fetch_tags_for_claims, new): the batch relevance prompt now
+     includes each candidate's claim_tag-linked tags (skill/domain/
+     job_function), with an explicit system-prompt instruction that tags are
+     an important relevance signal. Previously the LLM only saw free-text
+     problem/action/result descriptions and had no visibility into
+     user-confirmed tags.
+- v1 (2026-08-10, inferred): Initial batch-LLM relevance matcher.
 
-流程(computationally light 設計,依候選池規模 ~250-300 筆決定):
-  Step 1: 治理層硬性過濾 -- GovernanceORM.allowed_for_generation = True 才進入候選池
-  Step 2: 單次批次 LLM 判斷 -- 把全部候選經歷的摘要一次塞進同一個 prompt,
-          只呼叫一次 LLM,請它直接回傳相關的 claim_id 清單。
-          取代「每筆經歷各呼叫一次 LLM」的作法;若未來候選池遠超 1000+ 筆規模,
-          可考慮在此步驟之前先加一層向量相似度粗篩(用 claim_chunks 的 embedding)。
+JD -> 判斷哪些過往經歷跟這個職缺相關，決定要納入這次履歷的候選清單。
+含共用查詢工具：一次性把 claim -> action -> problem -> project -> position/company
+（或 degree/school）的完整背景資訊撈出來。
+
+core/db.py 的 ORM models 只用 Column(ForeignKey(...)) 建立外鍵約束，沒有定義
+relationship()，因此無法用 claim.action.problem... 這種屬性鏈存取，必須明確寫 JOIN 查詢。
+
+流程（computationally light 設計，依候選池規模 ~250-300 筆決定）：
+Step 1: 治理層過濾 -- 沒有 governance 紀錄的 claim 預設視為允許（對應 schema
+        allowed_for_generation BOOLEAN DEFAULT TRUE 的設計精神），只有明確
+        allowed_for_generation = False 的 claim 才被排除。
+Step 2: 單次批次 LLM 判斷 -- 把全部候選經歷的摘要（含 tag 標籤）一次塞進同一個
+        prompt，只呼叫一次 LLM，請它直接回傳相關的 claim_id 清單。
+        取代「每筆經歷各呼叫一次 LLM」的作法；若未來候選池遠超 1000+ 筆規模，
+        可考慮在此步驟之前先加一層向量相似度粗篩（用 claim_chunks 的 embedding）。
 """
 
 import re
 import uuid
+from collections import defaultdict
+
 from sqlalchemy import text
-from core.db import get_session, GovernanceORM
+from core.db import get_session, GovernanceORM, ClaimORM, ClaimTagORM, TagORM
 from core.llm_client import get_llm_client
 
-RELEVANCE_SYSTEM_PROMPT = """你是一個履歷篩選助手。以下會給你一份職缺敘述(Job Description),
-以及一份求職者過往經歷清單(每筆有編號、背景、問題、行動、成果,以及該筆經歷的使用規範)。
+RELEVANCE_SYSTEM_PROMPT = """你是一個履歷篩選助手。以下會給你一份職缺敘述（Job Description），
+以及一份求職者過往經歷清單（每筆有編號、背景、問題、行動、成果、標籤，以及該筆經歷的使用規範）。
 請判斷每一筆經歷是否與該職缺相關、值得放進針對這個職缺客製化的履歷裡。
 
-若某筆經歷的使用規範(use_policy)明確排除此職缺類型,一律視為不相關。
+標籤（tags）是重要的判斷訊號 -- 標籤代表使用者已手動確認這筆經歷具備的技能/領域/職能，
+即使成果描述文字本身沒有明確關鍵字，標籤命中職缺需求時仍應視為相關。
 
-輸出格式:只輸出相關經歷的編號,一行一個,不要其他文字、不要編號以外的說明。
-如果沒有任何一筆相關,輸出 NONE。"""
+若某筆經歷的使用規範（use_policy）明確排除此職缺類型，一律視為不相關。
+
+輸出格式：只輸出相關經歷的編號，一行一個，不要其他文字、不要編號以外的說明。
+如果沒有任何一筆相關，輸出 NONE。"""
 
 _EXPERIENCE_CONTEXT_SQL = """
-    SELECT
-        claim.claim_id,
-        claim.description AS claim_description,
-        action.description AS action_description,
-        action.role_scope,
-        problem.description AS problem_description,
-        problem.stakeholder_impact,
-        project.project_name,
-        project.project_context,
-        position.title AS position_title,
-        position.department,
-        position.start_date AS position_start,
-        position.end_date AS position_end,
-        company.company_name,
-        degree.degree_name,
-        degree.subject AS degree_subject,
-        degree.start_date AS degree_start,
-        degree.end_date AS degree_end,
-        school.school_name
-    FROM claim
-    JOIN action ON claim.action_id = action.action_id
-    JOIN problem ON action.problem_id = problem.problem_id
-    JOIN project ON problem.project_id = project.project_id
-    LEFT JOIN position ON project.position_id = position.position_id
-    LEFT JOIN company ON position.company_id = company.company_id
-    LEFT JOIN degree ON project.degree_id = degree.degree_id
-    LEFT JOIN school ON degree.school_id = school.school_id
-    WHERE claim.claim_id = ANY(:claim_ids)
+SELECT
+    claim.claim_id,
+    claim.description AS claim_description,
+    action.description AS action_description,
+    action.role_scope,
+    problem.description AS problem_description,
+    problem.stakeholder_impact,
+    project.project_name,
+    project.project_context,
+    position.title AS position_title,
+    position.department,
+    position.start_date AS position_start,
+    position.end_date AS position_end,
+    company.company_name,
+    degree.degree_name,
+    degree.subject AS degree_subject,
+    degree.start_date AS degree_start,
+    degree.end_date AS degree_end,
+    school.school_name
+FROM claim
+JOIN action ON claim.action_id = action.action_id
+JOIN problem ON action.problem_id = problem.problem_id
+JOIN project ON problem.project_id = project.project_id
+LEFT JOIN position ON project.position_id = position.position_id
+LEFT JOIN company ON position.company_id = company.company_id
+LEFT JOIN degree ON project.degree_id = degree.degree_id
+LEFT JOIN school ON degree.school_id = school.school_id
+WHERE claim.claim_id = ANY(:claim_ids)
 """
 
 
 def to_uuid_list(claim_ids: list) -> list[uuid.UUID]:
-    """claim_id 對外一律用字串(UUID 文字)傳遞,餵進 SQLAlchemy PGUUID 欄位過濾前
+    """claim_id 對外一律用字串（UUID 文字）傳遞，餵進 SQLAlchemy PGUUID 欄位過濾前
     需轉成 uuid.UUID 物件。"""
     return [uuid.UUID(cid) if isinstance(cid, str) else cid for cid in claim_ids]
 
 
 def fetch_experience_contexts(session, claim_ids: list[str]) -> dict[str, dict]:
-    """回傳 {claim_id字串: context_dict} 映射,一次 JOIN 查詢取得完整背景資訊。
+    """回傳 {claim_id字串: context_dict} 映射，一次 JOIN 查詢取得完整背景資訊。
 
-    is_work_track=True 代表這筆經歷掛在 position(工作經歷)底下,
-    False 代表掛在 degree(學業經歷)底下(project.position_id / degree_id 二擇一)。
+    is_work_track=True 代表這筆經歷掛在 position（工作經歷）底下，
+    False 代表掛在 degree（學業經歷）底下（project.position_id / degree_id 二擇一）。
     """
     if not claim_ids:
         return {}
@@ -102,68 +130,117 @@ def fetch_experience_contexts(session, claim_ids: list[str]) -> dict[str, dict]:
     return contexts
 
 
-def _allowed_governance(session) -> dict[str, GovernanceORM]:
-    """Step 1: 只取 allowed_for_generation = True 的治理紀錄,claim_id -> GovernanceORM 映射。"""
-    rows = session.query(GovernanceORM).filter(
-        GovernanceORM.allowed_for_generation.is_(True)
-    ).all()
-    return {str(g.claim_id): g for g in rows}
+def fetch_tags_for_claims(session, claim_ids: list[str]) -> dict[str, list[str]]:
+    """claim_id -> [tag_name, ...] 映射，一次 JOIN 查詢取得每筆 claim 的所有標籤。
+
+    (v2) 用於把使用者手動確認過的標籤塞進批次判斷 prompt，作為比成果描述文字
+    更明確的相關性訊號。
+    """
+    if not claim_ids:
+        return {}
+
+    rows = (
+        session.query(ClaimTagORM.claim_id, TagORM.tag_name)
+        .join(TagORM, ClaimTagORM.tag_id == TagORM.tag_id)
+        .filter(ClaimTagORM.claim_id.in_(to_uuid_list(claim_ids)))
+        .all()
+    )
+
+    tags_map: dict[str, list[str]] = defaultdict(list)
+    for claim_id, tag_name in rows:
+        tags_map[str(claim_id)].append(tag_name)
+    return tags_map
+
+
+def _resolve_candidate_ids(session) -> tuple[list[str], dict[str, GovernanceORM]]:
+    """Step 1: 治理層過濾。
+
+    候選清單 = 全部 claim_id，排除掉「有 governance 紀錄且明確
+    allowed_for_generation = False」的 claim。沒有 governance 紀錄的 claim
+    （例如治理層加入之前建立的舊 claim）預設視為允許，對應 schema
+    allowed_for_generation BOOLEAN DEFAULT TRUE 的設計精神。
+
+    Returns:
+        candidate_ids: 允許進入候選池的 claim_id 字串清單。
+        governance_map: claim_id -> GovernanceORM，只包含「確實有 governance
+            紀錄」的 claim（用於後續組 prompt 時讀取 use_policy/notes_for_llm；
+            沒有紀錄的 claim 在 governance_map 裡不存在，呼叫端應以「無」處理）。
+    """
+    all_claim_ids = [str(row[0]) for row in session.query(ClaimORM.claim_id).all()]
+
+    governance_rows = session.query(GovernanceORM).all()
+    governance_map = {str(g.claim_id): g for g in governance_rows}
+
+    candidate_ids = [
+        cid for cid in all_claim_ids
+        if governance_map.get(cid) is None or governance_map[cid].allowed_for_generation is not False
+    ]
+    return candidate_ids, governance_map
 
 
 def _build_batch_prompt(
     candidate_ids: list[str],
     contexts: dict[str, dict],
     governances: dict[str, GovernanceORM],
+    tags_map: dict[str, list[str]],
     job_description: str,
 ) -> tuple[str, dict[int, str]]:
-    """組出單一批次 prompt,把所有候選經歷編號列出。回傳 (prompt, {編號: claim_id})。"""
+    """組出單一批次 prompt，把所有候選經歷編號列出（含標籤）。回傳 (prompt, {編號: claim_id})。"""
     index_to_claim_id: dict[int, str] = {}
     lines = []
     for i, claim_id in enumerate(candidate_ids, 1):
         ctx = contexts.get(claim_id)
-        governance = governances.get(claim_id)
-        if not ctx or not governance:
+        if not ctx:
             continue
         index_to_claim_id[i] = claim_id
+
+        governance = governances.get(claim_id)
+        use_policy = governance.use_policy if governance else None
+        notes_for_llm = governance.notes_for_llm if governance else None
+
+        tags = tags_map.get(claim_id, [])
+        tags_line = ", ".join(tags) if tags else "無"
+
         org_context = f"{ctx['org_name']} - {ctx['title']}" if ctx["org_name"] else "無背景資訊"
         lines.append(
             f"[{i}] 背景: {org_context}\n"
             f"    問題: {ctx['problem_description']}\n"
             f"    行動: {ctx['action_description']}\n"
             f"    成果: {ctx['claim_description']}\n"
-            f"    使用規範: use_policy={governance.use_policy or '無'}, "
-            f"notes_for_llm={governance.notes_for_llm or '無'}"
+            f"    標籤: {tags_line}\n"
+            f"    使用規範: use_policy={use_policy or '無'}, "
+            f"notes_for_llm={notes_for_llm or '無'}"
         )
 
     experiences_block = "\n\n".join(lines)
-    user_prompt = f"""# 職缺敘述(Job Description)
+    user_prompt = f"""# 職缺敘述（Job Description）
 {job_description}
 
-# 過往經歷清單(共 {len(index_to_claim_id)} 筆)
+# 過往經歷清單（共 {len(index_to_claim_id)} 筆）
 {experiences_block}"""
 
     return user_prompt, index_to_claim_id
 
 
 def _parse_relevant_indices(raw_response: str) -> set[int]:
-    """從 LLM 回應中抓出所有數字編號,容忍多餘文字/markdown 包裝。"""
+    """從 LLM 回應中抓出所有數字編號，容忍多餘文字/markdown 包裝。"""
     if "NONE" in raw_response.upper() and not re.search(r"\d", raw_response):
         return set()
     return {int(n) for n in re.findall(r"\d+", raw_response)}
 
 
 def select_claims(job_description: str) -> list[str]:
-    """主函式:單次批次 LLM 呼叫,回傳最終應納入這次履歷的 claim_id(UUID字串)清單。"""
+    """主函式：單次批次 LLM 呼叫，回傳最終應納入這次履歷的 claim_id（UUID字串）清單。"""
     with get_session() as session:
-        governances = _allowed_governance(session)
-        if not governances:
+        candidate_ids, governances = _resolve_candidate_ids(session)
+        if not candidate_ids:
             return []
 
-        candidate_ids = list(governances.keys())
         contexts = fetch_experience_contexts(session, candidate_ids)
+        tags_map = fetch_tags_for_claims(session, candidate_ids)
 
         user_prompt, index_to_claim_id = _build_batch_prompt(
-            candidate_ids, contexts, governances, job_description
+            candidate_ids, contexts, governances, tags_map, job_description
         )
 
         if not index_to_claim_id:
@@ -180,5 +257,4 @@ def select_claims(job_description: str) -> list[str]:
         selected_ids = [
             index_to_claim_id[i] for i in relevant_indices if i in index_to_claim_id
         ]
-
-    return selected_ids
+        return selected_ids

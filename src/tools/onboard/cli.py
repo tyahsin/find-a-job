@@ -1,12 +1,55 @@
 """
 onboard/cli.py
+Version: v1.9 (2026-08-10)
+
+Changelog:
+- v1.9 (2026-08-10): add-project's work/education branches now try a flat
+  join-based selector FIRST (_select_existing_position_flat /
+  _select_existing_degree_flat), mirroring the pattern already used by
+  add-claim's project selector. If any position+company (work track) or
+  degree+school (education track) rows already exist, the user sees one
+  numbered table with Institution / Role columns and can pick directly --
+  skipping the separate "select/create company" then "select/create
+  position" steps entirely. A "[Create new]" row (option 0) is always
+  offered so the user can still create a brand-new company+position (or
+  school+degree) even when existing ones are shown. If NO rows exist at
+  all yet, the flat selector returns None immediately (no menu shown) and
+  add_project() falls back to the original _resolve_company ->
+  _resolve_position (or _resolve_school -> _resolve_degree) stepwise
+  flow, unchanged from prior versions. add-claim's own project selector
+  and governance flow are untouched by this change.
+- v1.8 (2026-08-10): Governance support_level moved to an explicit call
+  (core.db.fill_pending_support_levels()) made once, right after
+  add_claim()'s `with get_session()` block finishes committing. Only
+  add-claim calls it -- governance conceptually only exists for claims.
+- v1.7 (2026-08-10): [SUPERSEDED by v1.8] support_level via global
+  after_commit hook.
+- v1.6 (2026-08-10): Added Step 6 (governance) to add-claim.
+- v1.5 (2026-08-10): Added add-company / add-school / add-position /
+  add-degree standalone commands.
+- v1.4 (2026-08-10): Removed "Start Date" column from add-claim's project
+  selector -- Institution / Role / Project only.
+- v1.3 (2026-08-10): add-claim's project selector flattened via two
+  explicit JOIN queries.
+- v1.2 (2026-08-10): work/education track selection via fixed menu.
+- v1.1 (2026-08-10): Full English-only pass.
+- v1.0 (2026-08-04, inferred): Original Chinese-language CLI interface.
+
 Typer CLI entrypoint for the onboard module.
 
 Implements:
+- `add-company` / `add-school`: standalone single-entity commands for the
+  upper-level entities.
+- `add-position` / `add-degree`: standalone single-entity commands for the
+  mid-level entities.
 - `add-project`: walks through Step 0-4 (company/school -> position/degree
-  -> project), single transactional write.
-- `add-claim`: walks through Step 0-5 (select project -> problem -> action ->
-  claim/description -> evidence -> tags), single transactional write.
+  -> project). As of v1.9, tries a flat Institution/Role selector first
+  for the position/degree step if any exist; falls back to the original
+  select-or-create steps otherwise. Never touches governance.
+- `add-claim`: walks through Step 0-6 (select project -> problem -> action ->
+  claim/description -> metrics -> evidence -> tags -> governance), single
+  transactional write, followed by an explicit
+  core.db.fill_pending_support_levels() call.
 
 NOTE (Aug 2026): the education-track mid-level entity is called `degree`
 in the actual Postgres schema (table `degree`, column `degree_id`,
@@ -14,18 +57,27 @@ in the actual Postgres schema (table `degree`, column `degree_id`,
 
 Design notes (per Aug 2026 review):
 - --project-id is OPTIONAL on add-claim. If omitted, the user is walked
-  through an interactive selector that mirrors the add-project UX
-  (company/school -> position/degree -> project), reusing existing
-  list_rows()/Table-based selection logic already proven in add-project.
-- description prompt wording no longer overlaps with action's wording
-  (see onboard/prompts.py RESULT_CLAIM_SYSTEM_PROMPT).
-- evidence_type is a fixed numbered menu (not free text), and evidence_level
-  is auto-derived from the chosen type via EVIDENCE_TYPE_TO_LEVEL.
-- Tags are NOT typed by the user. After problem/action/claim/evidence are
-  collected, the LLM reads that same in-memory content (no re-pasting) and
-  proposes tags; the user reviews/edits the proposed list. Tagging itself
-  is a mandatory step of add-claim -- not a yes/no gate -- only the exact
-  tag content is adjustable.
+  through a flat, single-step project selector (see
+  _select_project_interactively) that joins across both the work track
+  (company/position/project) and education track (school/degree/project).
+- description prompt wording no longer overlaps with action's wording.
+- evidence_type is a fixed numbered menu; evidence_level is auto-derived.
+- work/education track selection in add-project is a fixed numbered menu.
+- add-project's position/degree step (v1.9) prefers a flat join-based
+  selector over the original company-then-position drill-down, when
+  existing rows are available -- consistent with add-claim's project
+  selector philosophy of "join and flatten wherever the FK chain allows
+  it, rather than making the user click through every parent level."
+- add-company/add-school/add-position/add-degree let entities be staged
+  incrementally, reusing the exact same resolver helpers as add-project.
+- Tags are NOT typed by the user; LLM proposes from in-memory content,
+  user reviews/edits.
+- Governance: support_level is NEVER computed or asked in this file --
+  the governance row is written with support_level=None, and
+  core.db.fill_pending_support_levels() is called explicitly, exactly
+  once, right after add-claim's own transaction commits.
+
+LANGUAGE POLICY: the entire interface is English.
 """
 
 from __future__ import annotations
@@ -46,12 +98,14 @@ from core.db import (
     CompanyORM,
     DegreeORM,
     EvidenceORM,
+    GovernanceORM,
     PositionORM,
     ProblemORM,
     ProjectORM,
     SchoolORM,
     TagORM,
     create_row,
+    fill_pending_support_levels,
     fuzzy_find_candidates,
     get_session,
     list_rows,
@@ -91,6 +145,12 @@ console = Console()
 # Small shared helpers
 # ---------------------------------------------------------------------------
 
+TRACK_OPTIONS: list[str] = [
+    "work",
+    "education",
+]
+
+
 def _prompt_date(label: str, allow_blank: bool = False) -> Optional[date]:
     while True:
         raw = typer.prompt(label, default="" if allow_blank else ...)
@@ -99,14 +159,14 @@ def _prompt_date(label: str, allow_blank: bool = False) -> Optional[date]:
         try:
             return datetime.strptime(raw.strip(), "%Y-%m-%d").date()
         except ValueError:
-            console.print("[red]日期格式錯誤，請用 YYYY-MM-DD[/red]")
+            console.print("[red]Invalid date format, please use YYYY-MM-DD[/red]")
 
 
 def _confirm_or_edit(draft: str, label: str) -> str:
-    console.print(f"\n[bold]{label}（LLM 草稿）[/bold]")
+    console.print(f"\n[bold]{label} (LLM draft)[/bold]")
     console.print(draft)
     edited = typer.prompt(
-        "按 Enter 確認採用，或直接輸入新文字覆蓋",
+        "Press Enter to accept, or type new text to override",
         default="",
         show_default=False,
     )
@@ -119,17 +179,17 @@ def _select_from_fuzzy_candidates(candidates, label_field: str):
     create a new row instead. Returns the chosen ORM object, or None if
     the user wants to create new.
     """
-    table = Table(title=f"找到 {len(candidates)} 筆相似的既有紀錄")
+    table = Table(title=f"Found {len(candidates)} similar existing record(s)")
     table.add_column("#")
-    table.add_column("名稱")
-    table.add_column("相似度")
+    table.add_column("Name")
+    table.add_column("Similarity")
 
     for idx, (row, score) in enumerate(candidates, start=1):
         table.add_row(str(idx), getattr(row, label_field), f"{score:.0f}%")
-    table.add_row("0", "[新增一筆]", "")
+    table.add_row("0", "[Create new]", "")
     console.print(table)
 
-    choice = typer.prompt("請選擇編號", type=int)
+    choice = typer.prompt("Select a number", type=int)
     if choice == 0:
         return None
     return candidates[choice - 1][0]
@@ -154,7 +214,7 @@ def _select_from_list(rows, columns: list[tuple[str, str]], title: str, allow_ne
         table.add_row("0", f"[{allow_new_label}]", *["" for _ in columns[1:]])
     console.print(table)
 
-    choice = typer.prompt("請選擇編號", type=int)
+    choice = typer.prompt("Select a number", type=int)
     if allow_new_label is not None and choice == 0:
         return None
     return rows[choice - 1]
@@ -164,38 +224,133 @@ def _select_from_menu(options: list[str], title: str, allow_blank: bool = False)
     """
     Fixed-choice numbered menu -- used for fields where free-typing would
     lead to inconsistent values across records (e.g. role_scope, value_type,
-    metric_confidence). If `allow_blank` is True, option 0 lets the user
-    skip the field entirely (returns None).
+    metric_confidence, work/education track). If `allow_blank` is True,
+    option 0 lets the user skip the field entirely (returns None).
     """
     table = Table(title=title)
     table.add_column("#")
-    table.add_column("選項")
-    start = 0 if allow_blank else 1
+    table.add_column("Option")
     if allow_blank:
-        table.add_row("0", "[留空]")
+        table.add_row("0", "[Skip]")
     for idx, option in enumerate(options, start=1):
         table.add_row(str(idx), option)
     console.print(table)
 
-    choice = typer.prompt("請選擇編號", type=int)
+    choice = typer.prompt("Select a number", type=int)
     if allow_blank and choice == 0:
         return None
     return options[choice - 1]
+
+
+def _select_existing_company(session) -> CompanyORM:
+    """
+    Plain numbered list of ALL existing companies (no fuzzy search --
+    used when a caller needs to attach a new child row, e.g. a position,
+    to a company that must already exist). Exits with an error if there
+    are no companies yet.
+    """
+    companies = list_rows(session, CompanyORM)
+    if not companies:
+        console.print("[red]No company records found -- please run add-company first[/red]")
+        raise typer.Exit(code=1)
+    return _select_from_list(
+        companies, [("Company name", "company_name")], title="Select a company"
+    )
+
+
+def _select_existing_school(session) -> SchoolORM:
+    """
+    Plain numbered list of ALL existing schools (no fuzzy search -- used
+    when a caller needs to attach a new child row, e.g. a degree, to a
+    school that must already exist). Exits with an error if there are no
+    schools yet.
+    """
+    schools = list_rows(session, SchoolORM)
+    if not schools:
+        console.print("[red]No school records found -- please run add-school first[/red]")
+        raise typer.Exit(code=1)
+    return _select_from_list(
+        schools, [("School name", "school_name")], title="Select a school"
+    )
+
+
+# ---------------------------------------------------------------------------
+# add-project (v1.9): flat position/degree selectors
+# ---------------------------------------------------------------------------
+# Joins position+company (work track) or degree+school (education track)
+# directly, skipping the separate "pick/create company" then "pick/create
+# position" steps whenever existing rows are available. Returns None in
+# TWO cases, both of which signal the caller to fall back to the original
+# _resolve_company -> _resolve_position (or _resolve_school ->
+# _resolve_degree) stepwise flow:
+#   1. No rows exist at all yet (menu isn't even shown).
+#   2. The user explicitly picks "[Create new]" (option 0), even though
+#      existing rows were available -- the escape hatch for genuinely
+#      new companies/positions.
+
+
+def _select_existing_position_flat(session) -> Optional[PositionORM]:
+    rows = (
+        session.query(PositionORM, CompanyORM)
+        .join(CompanyORM, PositionORM.company_id == CompanyORM.company_id)
+        .all()
+    )
+    if not rows:
+        return None
+
+    table = Table(title="Select an existing position, or create a new one")
+    table.add_column("#")
+    table.add_column("Institution")
+    table.add_column("Role")
+    table.add_row("0", "[Create new]", "")
+    for idx, (position, company) in enumerate(rows, start=1):
+        table.add_row(str(idx), company.company_name or "", position.title or "")
+    console.print(table)
+
+    choice = typer.prompt("Select a number", type=int)
+    if choice == 0:
+        return None
+    return rows[choice - 1][0]
+
+
+def _select_existing_degree_flat(session) -> Optional[DegreeORM]:
+    rows = (
+        session.query(DegreeORM, SchoolORM)
+        .join(SchoolORM, DegreeORM.school_id == SchoolORM.school_id)
+        .all()
+    )
+    if not rows:
+        return None
+
+    table = Table(title="Select an existing education record, or create a new one")
+    table.add_column("#")
+    table.add_column("Institution")
+    table.add_column("Role")
+    table.add_row("0", "[Create new]", "")
+    for idx, (degree, school) in enumerate(rows, start=1):
+        table.add_row(str(idx), school.school_name or "", degree.degree_name or "")
+    console.print(table)
+
+    choice = typer.prompt("Select a number", type=int)
+    if choice == 0:
+        return None
+    return rows[choice - 1][0]
 
 
 # ---------------------------------------------------------------------------
 # Step 1: upper-level entity (company / school)
 # ---------------------------------------------------------------------------
 
+
 def _resolve_company(session) -> CompanyORM:
-    name = typer.prompt("公司名稱")
+    name = typer.prompt("Company name")
     candidates = fuzzy_find_candidates(session, CompanyORM, "company_name", name)
     if candidates:
         chosen = _select_from_fuzzy_candidates(candidates, "company_name")
         if chosen is not None:
             return chosen
 
-    location = typer.prompt("地點", default="", show_default=False)
+    location = typer.prompt("Location", default="", show_default=False)
     return create_row(
         session,
         CompanyORM,
@@ -204,14 +359,14 @@ def _resolve_company(session) -> CompanyORM:
 
 
 def _resolve_school(session) -> SchoolORM:
-    name = typer.prompt("學校名稱")
+    name = typer.prompt("School name")
     candidates = fuzzy_find_candidates(session, SchoolORM, "school_name", name)
     if candidates:
         chosen = _select_from_fuzzy_candidates(candidates, "school_name")
         if chosen is not None:
             return chosen
 
-    location = typer.prompt("地點", default="", show_default=False)
+    location = typer.prompt("Location", default="", show_default=False)
     return create_row(
         session,
         SchoolORM,
@@ -220,17 +375,83 @@ def _resolve_school(session) -> SchoolORM:
 
 
 # ---------------------------------------------------------------------------
+# Standalone entity commands -- lets upper/mid-level entities be staged
+# one at a time instead of only inside the monolithic add-project flow.
+# None of these call fill_pending_support_levels() -- governance never
+# applies to them.
+# ---------------------------------------------------------------------------
+
+
+@app.command("add-company")
+def add_company() -> None:
+    """Interactively add a single company record (standalone, no position/project required)."""
+    with get_session() as session:
+        company = _resolve_company(session)
+        if not _confirm_final_write():
+            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+            raise typer.Exit(code=0)
+        company_id = company.company_id
+
+    console.print(f"[green]Done! Company ID: {company_id}[/green]")
+
+
+@app.command("add-school")
+def add_school() -> None:
+    """Interactively add a single school record (standalone, no degree/project required)."""
+    with get_session() as session:
+        school = _resolve_school(session)
+        if not _confirm_final_write():
+            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+            raise typer.Exit(code=0)
+        school_id = school.school_id
+
+    console.print(f"[green]Done! School ID: {school_id}[/green]")
+
+
+@app.command("add-position")
+def add_position() -> None:
+    """Interactively add a single position record under an existing company (standalone, no project required)."""
+    with get_session() as session:
+        company = _select_existing_company(session)
+        position = _resolve_position(session, company)
+        if not _confirm_final_write():
+            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+            raise typer.Exit(code=0)
+        position_id = position.position_id
+
+    console.print(f"[green]Done! Position ID: {position_id}[/green]")
+
+
+@app.command("add-degree")
+def add_degree() -> None:
+    """Interactively add a single degree record under an existing school (standalone, no project required)."""
+    with get_session() as session:
+        school = _select_existing_school(session)
+        degree = _resolve_degree(session, school)
+        if not _confirm_final_write():
+            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+            raise typer.Exit(code=0)
+        degree_id = degree.degree_id
+
+    console.print(f"[green]Done! Degree ID: {degree_id}[/green]")
+
+
+# ---------------------------------------------------------------------------
 # Step 2: mid-level entity (position / degree)
 # ---------------------------------------------------------------------------
+
 
 def _draft_responsibility() -> tuple[str, Optional[str]]:
     """Returns (responsibility_text, responsibility_source)."""
     client = get_llm_client()
-    has_source = typer.confirm("是否有原始資料可連結職責描述（檔案路徑）？", default=False)
+    has_source = typer.confirm(
+        "Do you have a source document to link the responsibility description to (file path)?",
+        default=False,
+    )
 
     if has_source:
         while True:
-            path = typer.prompt("請輸入檔案路徑（.txt / .md / .pdf）")
+            path = typer.prompt("Enter file path (.txt / .md / .pdf)")
             try:
                 source_text = read_source_file(path)
                 break
@@ -241,15 +462,15 @@ def _draft_responsibility() -> tuple[str, Optional[str]]:
             system_prompt=RESPONSIBILITY_SYSTEM_PROMPT,
             user_prompt=build_responsibility_prompt_from_source(source_text),
         )
-        final_text = _confirm_or_edit(response.text, "職責摘要")
+        final_text = _confirm_or_edit(response.text, "Responsibility summary")
         return final_text, path
 
-    description = typer.prompt("請簡述這個職位的職責範圍")
+    description = typer.prompt("Briefly describe the scope of responsibilities for this position")
     response = client.generate_text(
         system_prompt=RESPONSIBILITY_SYSTEM_PROMPT,
         user_prompt=build_responsibility_prompt_from_description(description),
     )
-    final_text = _confirm_or_edit(response.text, "職責摘要")
+    final_text = _confirm_or_edit(response.text, "Responsibility summary")
     return final_text, None
 
 
@@ -258,17 +479,17 @@ def _resolve_position(session, company: CompanyORM) -> PositionORM:
     if existing:
         chosen = _select_from_list(
             existing,
-            [("職稱", "title"), ("部門", "department"), ("起始日期", "start_date")],
-            title=f"{company.company_name} 現有職位",
-            allow_new_label="新增職位",
+            [("Title", "title"), ("Department", "department"), ("Start date", "start_date")],
+            title=f"Existing positions at {company.company_name}",
+            allow_new_label="Add new position",
         )
         if chosen is not None:
             return chosen
 
-    title = typer.prompt("職稱")
-    department = typer.prompt("部門", default="", show_default=False)
-    start_dt = _prompt_date("起始日期 (YYYY-MM-DD)")
-    end_dt = _prompt_date("結束日期 (YYYY-MM-DD，可留空表示至今)", allow_blank=True)
+    title = typer.prompt("Job title")
+    department = typer.prompt("Department", default="", show_default=False)
+    start_dt = _prompt_date("Start date (YYYY-MM-DD)")
+    end_dt = _prompt_date("End date (YYYY-MM-DD, leave blank for present)", allow_blank=True)
     responsibility, responsibility_source = _draft_responsibility()
 
     return create_row(
@@ -291,17 +512,17 @@ def _resolve_degree(session, school: SchoolORM) -> DegreeORM:
     if existing:
         chosen = _select_from_list(
             existing,
-            [("學位/學程", "degree_name"), ("專業", "subject"), ("起始日期", "start_date")],
-            title=f"{school.school_name} 現有學業紀錄",
-            allow_new_label="新增學業紀錄",
+            [("Degree/Program", "degree_name"), ("Subject", "subject"), ("Start date", "start_date")],
+            title=f"Existing education records at {school.school_name}",
+            allow_new_label="Add new education record",
         )
         if chosen is not None:
             return chosen
 
-    degree_name = typer.prompt("學位/學程名稱")
-    subject = typer.prompt("專業", default="", show_default=False)
-    start_dt = _prompt_date("起始日期 (YYYY-MM-DD)")
-    end_dt = _prompt_date("結束日期 (YYYY-MM-DD，可留空)", allow_blank=True)
+    degree_name = typer.prompt("Degree/program name")
+    subject = typer.prompt("Subject", default="", show_default=False)
+    start_dt = _prompt_date("Start date (YYYY-MM-DD)")
+    end_dt = _prompt_date("End date (YYYY-MM-DD, leave blank)", allow_blank=True)
 
     return create_row(
         session,
@@ -320,22 +541,23 @@ def _resolve_degree(session, school: SchoolORM) -> DegreeORM:
 # Step 3: project
 # ---------------------------------------------------------------------------
 
+
 def _resolve_project(
     session,
     position_id: Optional[UUID],
     degree_id: Optional[UUID],
 ) -> ProjectORM:
-    project_name = typer.prompt("專案名稱")
-    start_dt = _prompt_date("專案起始日期 (YYYY-MM-DD)")
-    end_dt = _prompt_date("專案結束日期 (YYYY-MM-DD，可留空)", allow_blank=True)
-    description = typer.prompt("簡述這個專案的背景/情境")
+    project_name = typer.prompt("Project name")
+    start_dt = _prompt_date("Project start date (YYYY-MM-DD)")
+    end_dt = _prompt_date("Project end date (YYYY-MM-DD, leave blank)", allow_blank=True)
+    description = typer.prompt("Briefly describe the background/context of this project")
 
     client = get_llm_client()
     response = client.generate_text(
         system_prompt=PROJECT_CONTEXT_SYSTEM_PROMPT,
         user_prompt=build_project_context_prompt(description),
     )
-    project_context = _confirm_or_edit(response.text, "專案背景敘述")
+    project_context = _confirm_or_edit(response.text, "Project background narrative")
 
     return create_row(
         session,
@@ -355,130 +577,142 @@ def _resolve_project(
 # Step 4: final confirmation
 # ---------------------------------------------------------------------------
 
+
 def _confirm_final_write() -> bool:
-    return typer.confirm("\n確認寫入資料庫？", default=True)
+    return typer.confirm("\nConfirm write to database?", default=True)
 
 
 # ---------------------------------------------------------------------------
-# add-project command
+# add-project command (v1.9: flat position/degree selector first)
 # ---------------------------------------------------------------------------
+
 
 @app.command("add-project")
 def add_project() -> None:
-    """互動式新增一筆工作或學業經驗下的專案紀錄。"""
-    track = typer.prompt("這是工作經驗還是學業經驗？ [work/education]").strip().lower()
-    if track not in ("work", "education"):
-        console.print("[red]請輸入 work 或 education[/red]")
-        raise typer.Exit(code=1)
+    """Interactively add a new project record under a work or education experience."""
+    track = _select_from_menu(
+        TRACK_OPTIONS,
+        title="Is this a work experience or education experience?",
+        allow_blank=False,
+    )
 
     project_id: Optional[UUID] = None
 
     with get_session() as session:
         if track == "work":
-            company = _resolve_company(session)
-            position = _resolve_position(session, company)
+            position = _select_existing_position_flat(session)
+            if position is None:
+                company = _resolve_company(session)
+                position = _resolve_position(session, company)
             project = _resolve_project(session, position_id=position.position_id, degree_id=None)
         else:
-            school = _resolve_school(session)
-            degree = _resolve_degree(session, school)
+            degree = _select_existing_degree_flat(session)
+            if degree is None:
+                school = _resolve_school(session)
+                degree = _resolve_degree(session, school)
             project = _resolve_project(session, position_id=None, degree_id=degree.degree_id)
 
         if not _confirm_final_write():
-            console.print("[yellow]已取消，變更不會寫入。[/yellow]")
+            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
             raise typer.Exit(code=0)
 
         project_id = project.project_id
-        # transaction commits automatically on successful exit of get_session()
+        # transaction commits automatically on successful exit of get_session().
+        # NOTE: add-project never calls fill_pending_support_levels() --
+        # governance rows never exist for anything but claims.
 
-    console.print(f"[green]完成！新專案 ID：{project_id}[/green]")
+    console.print(f"[green]Done! New project ID: {project_id}[/green]")
 
 
 # ---------------------------------------------------------------------------
-# add-claim: interactive project selector
+# add-claim: interactive project selector (flat, join-based, single menu --
+# Institution / Role / Project columns only)
 # ---------------------------------------------------------------------------
+
 
 def _select_project_interactively(session) -> ProjectORM:
     """
-    Mirrors the add-project UX: pick company/school first (narrows the
-    search space), then position/degree under it, then project under
-    that. All lookups are indexed FK queries via list_rows() -- no fuzzy
-    search needed, and the UX is identical to what the user already knows
-    from add-project.
+    Shows every existing project in ONE flat numbered menu, regardless of
+    whether it sits under the work track (company -> position -> project)
+    or the education track (school -> degree -> project). Replaces the
+    old multi-step drill-down (pick track, then company/school, then
+    position/degree, then project) with a single selection step.
+
+    Since core/db.py's ORM models only define Column(ForeignKey(...)) and
+    no relationship(), cross-table lookups can't use attribute-chain
+    access (e.g. project.position.company) -- this runs two explicit JOIN
+    queries instead: one for the work track (project+position+company) and
+    one for the education track (project+degree+school). Results from
+    both are merged into a single list before being shown.
+
+    Each row displays exactly three columns:
+    - Institution: company_name (work track) or school_name (education track)
+    - Role: position.title (work track) or degree.degree_name (education track)
+    - Project: project_name
     """
-    track = typer.prompt("這個專案屬於工作經驗還是學業經驗？ [work/education]").strip().lower()
-    if track not in ("work", "education"):
-        console.print("[red]請輸入 work 或 education[/red]")
-        raise typer.Exit(code=1)
-
-    if track == "work":
-        companies = list_rows(session, CompanyORM)
-        if not companies:
-            console.print("[red]目前沒有任何公司紀錄，請先執行 add-project[/red]")
-            raise typer.Exit(code=1)
-        company = _select_from_list(
-            companies, [("公司名稱", "company_name")], title="請選擇公司"
-        )
-
-        positions = list_rows(session, PositionORM, company_id=company.company_id)
-        if not positions:
-            console.print("[red]這個公司底下沒有任何職位紀錄[/red]")
-            raise typer.Exit(code=1)
-        position = _select_from_list(
-            positions,
-            [("職稱", "title"), ("部門", "department"), ("起始日期", "start_date")],
-            title=f"{company.company_name} 現有職位",
-        )
-
-        projects = list_rows(session, ProjectORM, position_id=position.position_id)
-        parent_label = position.title
-    else:
-        schools = list_rows(session, SchoolORM)
-        if not schools:
-            console.print("[red]目前沒有任何學校紀錄，請先執行 add-project[/red]")
-            raise typer.Exit(code=1)
-        school = _select_from_list(
-            schools, [("學校名稱", "school_name")], title="請選擇學校"
-        )
-
-        degrees = list_rows(session, DegreeORM, school_id=school.school_id)
-        if not degrees:
-            console.print("[red]這個學校底下沒有任何學業紀錄[/red]")
-            raise typer.Exit(code=1)
-        degree = _select_from_list(
-            degrees,
-            [("學位/學程", "degree_name"), ("專業", "subject"), ("起始日期", "start_date")],
-            title=f"{school.school_name} 現有學業紀錄",
-        )
-
-        projects = list_rows(session, ProjectORM, degree_id=degree.degree_id)
-        parent_label = degree.degree_name
-
-    if not projects:
-        console.print(f"[red]{parent_label} 底下沒有任何專案紀錄，請先執行 add-project[/red]")
-        raise typer.Exit(code=1)
-
-    return _select_from_list(
-        projects,
-        [("專案名稱", "project_name"), ("起始日期", "start_date")],
-        title=f"{parent_label} 現有專案",
+    work_rows = (
+        session.query(ProjectORM, PositionORM, CompanyORM)
+        .join(PositionORM, ProjectORM.position_id == PositionORM.position_id)
+        .join(CompanyORM, PositionORM.company_id == CompanyORM.company_id)
+        .all()
     )
+    education_rows = (
+        session.query(ProjectORM, DegreeORM, SchoolORM)
+        .join(DegreeORM, ProjectORM.degree_id == DegreeORM.degree_id)
+        .join(SchoolORM, DegreeORM.school_id == SchoolORM.school_id)
+        .all()
+    )
+
+    combined: list[tuple[ProjectORM, str, str]] = []
+    for project, position, company in work_rows:
+        combined.append((project, company.company_name, position.title))
+    for project, degree, school in education_rows:
+        combined.append((project, school.school_name, degree.degree_name))
+
+    if not combined:
+        console.print("[red]No project records found -- please run add-project first[/red]")
+        raise typer.Exit(code=1)
+
+    combined.sort(key=lambda row: (row[1] or "", row[0].project_name or ""))
+
+    table = Table(title="Select a project")
+    table.add_column("#")
+    table.add_column("Institution")
+    table.add_column("Role")
+    table.add_column("Project")
+    for idx, (project, institution, role) in enumerate(combined, start=1):
+        table.add_row(
+            str(idx),
+            institution or "",
+            role or "",
+            project.project_name or "",
+        )
+    console.print(table)
+
+    choice = typer.prompt("Select a number", type=int)
+    return combined[choice - 1][0]
 
 
 # ---------------------------------------------------------------------------
 # add-claim: Step 1 -- problem
 # ---------------------------------------------------------------------------
 
+
 def _resolve_problem(session, project: ProjectORM) -> ProblemORM:
-    description = typer.prompt("請描述這個專案中遇到的問題（不需描述解決方式）")
+    description = typer.prompt("Describe the problem encountered in this project (no need to describe the solution)")
     client = get_llm_client()
     response = client.generate_text(
         system_prompt=PROBLEM_SYSTEM_PROMPT,
         user_prompt=build_problem_prompt(description),
     )
-    problem_description = _confirm_or_edit(response.text, "問題敘述")
+    problem_description = _confirm_or_edit(response.text, "Problem statement")
 
-    stakeholder_impact = typer.prompt("這個問題影響了哪些關係人？（可留空）", default="", show_default=False)
-    baseline_metric = typer.prompt("問題發生前的基準數據/狀態？（可留空）", default="", show_default=False)
+    stakeholder_impact = typer.prompt(
+        "Which stakeholders were affected by this problem? (optional)", default="", show_default=False
+    )
+    baseline_metric = typer.prompt(
+        "What was the baseline metric/state before this problem? (optional)", default="", show_default=False
+    )
 
     return create_row(
         session,
@@ -496,18 +730,19 @@ def _resolve_problem(session, project: ProjectORM) -> ProblemORM:
 # add-claim: Step 2 -- action
 # ---------------------------------------------------------------------------
 
+
 def _resolve_action(session, problem: ProblemORM) -> ActionORM:
-    description = typer.prompt("你針對這個問題做了什麼？（只描述行動本身）")
+    description = typer.prompt("What did you do about this problem? (describe only the action itself)")
     client = get_llm_client()
     response = client.generate_text(
         system_prompt=ACTION_SYSTEM_PROMPT,
         user_prompt=build_action_prompt(description),
     )
-    action_description = _confirm_or_edit(response.text, "行動敘述")
+    action_description = _confirm_or_edit(response.text, "Action statement")
 
     role_scope = _select_from_menu(
         ROLE_SCOPE_OPTIONS,
-        title="你在這個行動中的角色？",
+        title="What was your role in this action?",
         allow_blank=False,
     )
 
@@ -526,18 +761,16 @@ def _resolve_action(session, problem: ProblemORM) -> ActionORM:
 # add-claim: Step 3 -- claim (description)
 # ---------------------------------------------------------------------------
 
+
 def _resolve_claim(session, action: ActionORM) -> ClaimORM:
-    raw_input_text = typer.prompt("這個行動帶來了什麼具體結果？（只描述結果，不要重複行動本身）")
+    raw_input_text = typer.prompt("What concrete result did this action produce? (describe only the result, don't repeat the action)")
     client = get_llm_client()
     response = client.generate_text(
         system_prompt=RESULT_CLAIM_SYSTEM_PROMPT,
         user_prompt=build_result_claim_prompt(raw_input_text),
     )
-    description = _confirm_or_edit(response.text, "結果敘述")
+    description = _confirm_or_edit(response.text, "Result statement")
 
-    # value_type / metric / metric_confidence no longer live on claim itself --
-    # see _resolve_metrics() below, which supports multiple quantifiable
-    # metrics per claim via claim_metric.
     return create_row(
         session,
         ClaimORM,
@@ -549,55 +782,45 @@ def _resolve_claim(session, action: ActionORM) -> ClaimORM:
 
 
 # ---------------------------------------------------------------------------
-# add-claim: Step 3.5 -- metrics (LLM-extracted from the claim description,
-# supports multiple metrics per claim)
+# add-claim: Step 3.5 -- metrics
 # ---------------------------------------------------------------------------
-# LLM only extracts metrics explicitly present in the text -- it does not
-# estimate/invent values, and it never outputs metric_confidence (LLM
-# self-reported confidence is poorly calibrated; confidence here is always
-# a manual human judgment made during review).
+
 
 def _review_metric_drafts(drafts: list[tuple[str, str, str]]) -> list[tuple[str, str, str, str]]:
-    """
-    Shows LLM-extracted metric drafts (type, label, value) and lets the
-    user accept/edit/delete each one, plus add any the LLM missed. Returns
-    a final list of (metric_type, metric_label, metric_value, metric_confidence)
-    tuples -- confidence is always picked by the user here, never by the LLM.
-    """
-    console.print("\n[bold]量化指標草稿（LLM 從結果敘述中抽取）[/bold]")
+    console.print("\n[bold]Metric drafts (extracted by LLM from the result statement)[/bold]")
     if drafts:
         table = Table()
         table.add_column("#")
-        table.add_column("類型")
-        table.add_column("標籤")
-        table.add_column("數值")
+        table.add_column("Type")
+        table.add_column("Label")
+        table.add_column("Value")
         for idx, (m_type, m_label, m_value) in enumerate(drafts, start=1):
             table.add_row(str(idx), m_type, m_label, m_value)
         console.print(table)
     else:
-        console.print("[dim]（LLM 未偵測到任何可量化指標）[/dim]")
+        console.print("[dim](LLM did not detect any quantifiable metrics)[/dim]")
 
     finalized: list[tuple[str, str, str, str]] = []
     for m_type, m_label, m_value in drafts:
-        keep = typer.confirm(f"保留「{m_label}: {m_value}」這筆指標？", default=True)
+        keep = typer.confirm(f'Keep the metric "{m_label}: {m_value}"?', default=True)
         if not keep:
             continue
-        edited_label = typer.prompt("標籤", default=m_label)
-        edited_value = typer.prompt("數值", default=m_value)
+        edited_label = typer.prompt("Label", default=m_label)
+        edited_value = typer.prompt("Value", default=m_value)
         confidence = _select_from_menu(
             METRIC_CONFIDENCE_OPTIONS,
-            title=f"「{edited_label}」這筆數據的確信程度？",
+            title=f'Confidence level for "{edited_label}"?',
             allow_blank=False,
         )
         finalized.append((m_type, edited_label, edited_value, confidence))
 
-    while typer.confirm("要手動新增一筆指標嗎？（LLM 沒抓到的可以在這裡補）", default=False):
-        m_type = _select_from_menu(METRIC_TYPE_OPTIONS, title="指標類型？", allow_blank=False)
-        m_label = typer.prompt("標籤（這個數字代表什麼）")
-        m_value = typer.prompt("數值")
+    while typer.confirm("Manually add another metric? (add anything the LLM missed here)", default=False):
+        m_type = _select_from_menu(METRIC_TYPE_OPTIONS, title="Metric type?", allow_blank=False)
+        m_label = typer.prompt("Label (what this number represents)")
+        m_value = typer.prompt("Value")
         confidence = _select_from_menu(
             METRIC_CONFIDENCE_OPTIONS,
-            title=f"「{m_label}」這筆數據的確信程度？",
+            title=f'Confidence level for "{m_label}"?',
             allow_blank=False,
         )
         finalized.append((m_type, m_label, m_value, confidence))
@@ -633,21 +856,21 @@ def _resolve_metrics(session, claim: ClaimORM) -> list[ClaimMetricORM]:
 
 
 # ---------------------------------------------------------------------------
-# add-claim: Step 4 -- evidence (a claim may have multiple pieces of
-# evidence, e.g. one L1 direct artifact plus a supporting L3 mention)
+# add-claim: Step 4 -- evidence
 # ---------------------------------------------------------------------------
+
 
 def _select_evidence_type() -> tuple[str, str]:
     choices = list(EVIDENCE_TYPE_TO_LEVEL.keys())
-    table = Table(title="請選擇證據類型（等級將自動對應）")
+    table = Table(title="Select evidence type (level will be assigned automatically)")
     table.add_column("#")
-    table.add_column("證據類型")
-    table.add_column("對應等級")
+    table.add_column("Evidence type")
+    table.add_column("Corresponding level")
     for idx, choice in enumerate(choices, start=1):
         table.add_row(str(idx), choice, EVIDENCE_TYPE_TO_LEVEL[choice])
     console.print(table)
 
-    idx = typer.prompt("請選擇編號", type=int)
+    idx = typer.prompt("Select a number", type=int)
     evidence_type = choices[idx - 1]
     evidence_level = EVIDENCE_TYPE_TO_LEVEL[evidence_type]
     return evidence_type, evidence_level
@@ -656,10 +879,9 @@ def _select_evidence_type() -> tuple[str, str]:
 def _resolve_one_evidence(session, claim: ClaimORM) -> EvidenceORM:
     evidence_type, evidence_level = _select_evidence_type()
     evidence_location = typer.prompt(
-        "證據存放位置/連結？（例如檔案路徑、連結，可留空）", default="", show_default=False
+        "Evidence location/link? (e.g. file path, URL, optional)", default="", show_default=False
     )
-
-    console.print(f"[dim]對應證據等級：{evidence_level}（依證據類型自動判定）[/dim]")
+    console.print(f"[dim]Corresponding evidence level: {evidence_level} (auto-derived from evidence type)[/dim]")
 
     return create_row(
         session,
@@ -674,46 +896,29 @@ def _resolve_one_evidence(session, claim: ClaimORM) -> EvidenceORM:
 
 
 def _resolve_evidences(session, claim: ClaimORM) -> list[EvidenceORM]:
-    """
-    A single claim may have multiple pieces of evidence (e.g. a direct L1
-    artifact plus a supporting L3 mention from a performance review). This
-    loops _resolve_one_evidence() until the user says there's nothing more
-    to add -- at least one evidence entry is required per claim.
-    """
     evidences: list[EvidenceORM] = [_resolve_one_evidence(session, claim)]
-    while typer.confirm("這個 claim 還有其他證據要補充嗎？", default=False):
+    while typer.confirm("Any other evidence to add for this claim?", default=False):
         evidences.append(_resolve_one_evidence(session, claim))
     return evidences
 
 
 # ---------------------------------------------------------------------------
-# add-claim: Step 5 -- tags (LLM-generated, mandatory step)
+# add-claim: Step 5 -- tags
 # ---------------------------------------------------------------------------
-# Problem 1 fix: tags are generated by the LLM from the claim's full content,
-# not typed by the user.
-# Problem 2 fix: this step is not a yes/no gate -- it always runs as part of
-# add-claim. Only the proposed tag list itself is editable.
-# Problem 3 fix: the LLM prompt is built directly from problem/action/claim/
-# evidence text already held in memory during this run -- the user never
-# re-pastes anything.
+
 
 def _confirm_or_edit_tags(proposed: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """
-    Shows the LLM-proposed tag list and lets the user accept as-is, or
-    replace it with their own comma-separated list. Returns a list of
-    (tag_name, tag_category) tuples.
-    """
-    console.print("\n[bold]標籤草稿（LLM 根據這筆紀錄的完整內容生成）[/bold]")
+    console.print("\n[bold]Tag drafts (generated by LLM from this record's full content)[/bold]")
     table = Table()
     table.add_column("#")
-    table.add_column("標籤")
-    table.add_column("類別")
+    table.add_column("Tag")
+    table.add_column("Category")
     for idx, (name, category) in enumerate(proposed, start=1):
         table.add_row(str(idx), name, category)
     console.print(table)
 
     edited = typer.prompt(
-        "按 Enter 確認採用以上標籤，或輸入新的標籤列表（格式：標籤1|類別1, 標籤2|類別2, ...）",
+        "Press Enter to accept the tags above, or type a new tag list (format: tag1|category1, tag2|category2, ...)",
         default="",
         show_default=False,
     )
@@ -735,34 +940,25 @@ def _confirm_or_edit_tags(proposed: list[tuple[str, str]]) -> list[tuple[str, st
 
 
 def _build_static_context(session, project: ProjectORM) -> str:
-    """
-    Resolves the claim's linked static (relatively unchanging) data --
-    company/position for work-track projects, or school/degree for
-    education-track projects -- by walking up from the already-selected
-    project. This context is passed into tag generation so the LLM can
-    infer domain/job_function tags implied by *where* the work happened
-    (e.g. company industry, job title), not just from the problem/action/
-    result text.
-    """
     if project.position_id is not None:
         position = session.get(PositionORM, project.position_id)
         company = session.get(CompanyORM, position.company_id) if position else None
         parts = []
         if company is not None:
-            parts.append(f"公司：{company.company_name}" + (f"（{company.location}）" if company.location else ""))
+            parts.append(f"Company: {company.company_name}" + (f" ({company.location})" if company.location else ""))
         if position is not None:
-            parts.append(f"職稱：{position.title}" + (f"，部門：{position.department}" if position.department else ""))
-        return "；".join(parts)
+            parts.append(f"Title: {position.title}" + (f", Department: {position.department}" if position.department else ""))
+        return "; ".join(parts)
 
     if project.degree_id is not None:
         degree = session.get(DegreeORM, project.degree_id)
         school = session.get(SchoolORM, degree.school_id) if degree else None
         parts = []
         if school is not None:
-            parts.append(f"學校：{school.school_name}" + (f"（{school.location}）" if school.location else ""))
+            parts.append(f"School: {school.school_name}" + (f" ({school.location})" if school.location else ""))
         if degree is not None:
-            parts.append(f"學位/學程：{degree.degree_name}" + (f"，專業：{degree.subject}" if degree.subject else ""))
-        return "；".join(parts)
+            parts.append(f"Degree/Program: {degree.degree_name}" + (f", Subject: {degree.subject}" if degree.subject else ""))
+        return "; ".join(parts)
 
     return ""
 
@@ -776,7 +972,7 @@ def _resolve_tags(
     project: ProjectORM,
 ) -> list[TagORM]:
     static_context = _build_static_context(session, project)
-    evidence_types_joined = "、".join(sorted({e.evidence_type for e in evidences}))
+    evidence_types_joined = ", ".join(sorted({e.evidence_type for e in evidences}))
 
     client = get_llm_client()
     response = client.generate_text(
@@ -810,18 +1006,52 @@ def _resolve_tags(
 
 
 # ---------------------------------------------------------------------------
+# add-claim: Step 6 -- governance
+# ---------------------------------------------------------------------------
+
+
+def _resolve_governance(session, claim: ClaimORM) -> GovernanceORM:
+    use_policy = typer.prompt(
+        "Usage restriction, if any (e.g. senior roles only, specific industry)? (optional, blank = follow global rules)",
+        default="",
+        show_default=False,
+    )
+    notes_for_llm = typer.prompt(
+        "Any operating notes for the generation model? (optional, blank = follow global rules)",
+        default="",
+        show_default=False,
+    )
+    allowed_for_generation = typer.confirm(
+        "Allow this claim into the CV-generation candidate pool?", default=True
+    )
+
+    return create_row(
+        session,
+        GovernanceORM,
+        {
+            "claim_id": claim.claim_id,
+            "support_level": None,  # filled in by fill_pending_support_levels(), called after commit
+            "use_policy": use_policy or None,
+            "notes_for_llm": notes_for_llm or None,
+            "allowed_for_generation": allowed_for_generation,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # add-claim command
 # ---------------------------------------------------------------------------
+
 
 @app.command("add-claim")
 def add_claim(
     project_id: Optional[UUID] = typer.Option(
         None,
         "--project-id",
-        help="要新增 claim 的 project UUID。若省略，將進入互動式選擇流程。",
-    )
+        help="UUID of the project to add a claim to. If omitted, an interactive selector is shown.",
+    ),
 ) -> None:
-    """互動式新增一筆 problem -> action -> claim -> metric(s) -> evidence(s) -> tag 紀錄。"""
+    """Interactively add a problem -> action -> claim -> metric(s) -> evidence(s) -> tag(s) -> governance record."""
     claim_id: Optional[UUID] = None
     evidence_ids: list[UUID] = []
     metric_summaries: list[str] = []
@@ -831,12 +1061,12 @@ def add_claim(
         if project_id is not None:
             project = session.get(ProjectORM, project_id)
             if project is None:
-                console.print(f"[red]找不到 project_id：{project_id}[/red]")
+                console.print(f"[red]No project found for project_id: {project_id}[/red]")
                 raise typer.Exit(code=1)
         else:
             project = _select_project_interactively(session)
 
-        console.print(f"[bold]已選擇專案：{project.project_name}[/bold]\n")
+        console.print(f"[bold]Selected project: {project.project_name}[/bold]\n")
 
         problem = _resolve_problem(session, project)
         action = _resolve_action(session, problem)
@@ -844,23 +1074,26 @@ def add_claim(
         metrics = _resolve_metrics(session, claim)
         evidences = _resolve_evidences(session, claim)
         tags = _resolve_tags(session, claim, problem, action, evidences, project)
+        _resolve_governance(session, claim)
 
         if not _confirm_final_write():
-            console.print("[yellow]已取消，變更不會寫入。[/yellow]")
+            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
             raise typer.Exit(code=0)
 
         claim_id = claim.claim_id
         evidence_ids = [evidence.evidence_id for evidence in evidences]
         metric_summaries = [f"{m.metric_label}: {m.metric_value}" for m in metrics]
         tag_names = [tag.tag_name for tag in tags]
-        # transaction commits automatically on successful exit of get_session()
 
-    console.print(f"[green]完成！新 claim ID：{claim_id}[/green]")
-    console.print(f"[green]證據 ID（共 {len(evidence_ids)} 筆）：{', '.join(str(e) for e in evidence_ids)}[/green]")
+    fill_pending_support_levels()
+
+    console.print(f"[green]Done! New claim ID: {claim_id}[/green]")
+    console.print(f"[green]Evidence IDs ({len(evidence_ids)} total): {', '.join(str(e) for e in evidence_ids)}[/green]")
     if metric_summaries:
-        console.print(f"[green]量化指標：{'; '.join(metric_summaries)}[/green]")
+        console.print(f"[green]Metrics: {'; '.join(metric_summaries)}[/green]")
     if tag_names:
-        console.print(f"[green]標籤：{', '.join(tag_names)}[/green]")
+        console.print(f"[green]Tags: {', '.join(tag_names)}[/green]")
+    console.print("[green]Governance support_level: computed and filled in.[/green]")
 
 
 if __name__ == "__main__":

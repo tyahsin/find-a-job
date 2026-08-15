@@ -1,0 +1,14 @@
+settings:
+  current_date: "2026-08-12"
+  render_command:
+    # typst_path: 
+    pdf_path: /Users/yahsintsai/Downloads/ya_hsin_tsai.pdf
+    # markdown_path: 
+    # html_path:
+    # png_path: 
+    dont_generate_markdown: true
+    dont_generate_html: true
+    dont_generate_typst: false
+    dont_generate_pdf: false
+    dont_generate_png: true
+  bold_keywords: []

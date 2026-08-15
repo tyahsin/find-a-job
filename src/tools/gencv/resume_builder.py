@@ -1,22 +1,24 @@
 """
 resume_builder.py
-把選定的經歷(claim)從資料庫組裝成履歷內容 YAML,交給 rendercv 官方套件(pip 安裝、
-CLI 呼叫)排版編譯成最終 PDF。
+Version: v1
 
-輸出格式已對照 RenderCV 官方 YAML schema 逐欄位核對:
-  ExperienceEntry: company / position / start_date / end_date / location / summary / highlights
-  OneLineEntry:    label / details
-start_date 缺值時不寫入該 key(而非顯式寫 null);end_date 缺值時一律填 "present"。
+把選定的經歷（claim）從資料庫組裝成履歷內容 YAML，交給 rendercv 官方套件（pip 安裝、
+CLI 呼叫）排版編譯成最終 PDF。
 
-design/locale/settings 三份凍結設定檔命名為 design.yaml / locale.yaml / settings.yaml,
-放在 gencv/templates/ 底下(可從 test.yaml 拆出對應區塊)。
+輸出格式已對照 RenderCV 官方 YAML schema 逐欄位核對：
+ExperienceEntry: company / position / start_date / end_date / location / summary / highlights
+OneLineEntry: label / details
+start_date 缺值時不寫入該 key（而非顯式寫 null）；end_date 缺值時一律填 "present"。
 
-前置需求:
-    pip install rendercv
-    templates/design.yaml / locale.yaml / settings.yaml 三份凍結設定檔。
+design/locale/settings 三份凍結設定檔命名為 design.yaml / locale.yaml / settings.yaml，
+放在 gencv/templates/ 底下（已從 test.yaml 拆出對應區塊，2026-08-12 確認就位）。
 
-實作備註(2026-08-10):本檔案是內部模組,不再提供 __main__ 命令列入口 -- 對外唯一
-執行入口是 gencv/cli.py(python -m gencv.cli generate ...)。
+前置需求：
+pip install rendercv
+templates/design.yaml / locale.yaml / settings.yaml 三份凍結設定檔。
+
+實作備註（2026-08-10）：本檔案是內部模組，不再提供 __main__ 命令列入口 -- 對外唯一
+執行入口是 gencv/cli.py（python -m gencv.cli generate ...）。
 """
 
 import pathlib
@@ -25,22 +27,23 @@ import sys
 from collections import defaultdict
 
 import yaml
+import tempfile
 
 from core.db import get_session, ClaimMetricORM, ClaimTagORM, TagORM
 from gencv.experience_matcher import fetch_experience_contexts, to_uuid_list
 
 TEMPLATES_DIR = pathlib.Path(__file__).parent / "templates"
-
+print(f"[INFO] Using templates from {TEMPLATES_DIR.resolve()}")
 
 # ---------------------------------------------------------------------------
-# 資料組裝:資料庫 -> rendercv 的 cv YAML 內容
+# 資料組裝：資料庫 -> rendercv 的 cv YAML 內容
 # ---------------------------------------------------------------------------
 
 def format_highlight(claim_description: str, metrics: list) -> str:
     """把一筆經歷的描述 + 其數據指標組成一條 highlight 字串。
     數字用 **bold** 標記 -- rendercv 原生支援 highlight 內的 Markdown 語法。
-    claim_description 可能是原句,也可能是 experience_rewriter.py 產出、
-    使用者已人工確認過的改寫版,metric 數字一律機械式附加,不受改寫影響。"""
+    claim_description 可能是原句，也可能是 experience_rewriter.py 產出、
+    使用者已人工確認過的改寫版，metric 數字一律機械式附加，不受改寫影響。"""
     text_out = claim_description
     metric_frags = [
         f"**{m.metric_value}** ({m.metric_label})" for m in metrics if m.metric_value
@@ -53,7 +56,7 @@ def format_highlight(claim_description: str, metrics: list) -> str:
 def build_experience_entries(
     session, claim_ids: list[str], description_overrides: dict[str, str] | None = None
 ) -> list[dict]:
-    """依 claim_id 清單取得完整背景,依組織+職稱分組,組成 rendercv ExperienceEntry 清單。"""
+    """依 claim_id 清單取得完整背景，依組織+職稱分組，組成 rendercv ExperienceEntry 清單。"""
     contexts = fetch_experience_contexts(session, claim_ids)
     description_overrides = description_overrides or {}
 
@@ -90,7 +93,7 @@ def build_experience_entries(
         }
         if start_date:
             entry["start_date"] = str(start_date)
-        entry["end_date"] = str(end_date) if end_date else "present"
+            entry["end_date"] = str(end_date) if end_date else "present"
         if ctx.get("project_context"):
             entry["summary"] = ctx["project_context"]
         entries.append(entry)
@@ -100,7 +103,7 @@ def build_experience_entries(
 
 
 def build_skills_section(session, claim_ids: list[str]) -> list[dict]:
-    """從關聯的標籤中,依 skill/domain/job_function 三類分組,輸出 rendercv OneLineEntry 清單。"""
+    """從關聯的標籤中，依 skill/domain/job_function 三類分組，輸出 rendercv OneLineEntry 清單。"""
     if not claim_ids:
         return []
 
@@ -110,6 +113,7 @@ def build_skills_section(session, claim_ids: list[str]) -> list[dict]:
         .filter(ClaimTagORM.claim_id.in_(to_uuid_list(claim_ids)))
         .all()
     )
+
     grouped: dict[str, set] = defaultdict(set)
     for tag in tag_rows:
         grouped[tag.tag_category].add(tag.tag_name)
@@ -125,16 +129,16 @@ def build_skills_section(session, claim_ids: list[str]) -> list[dict]:
     return entries
 
 
-def build_resume_yaml(
+def build_cv_yaml(
     claim_ids: list[str], headline: str, name: str, output_path: str,
     description_overrides: dict[str, str] | None = None,
 ) -> str:
-    """組出 rendercv 看得懂的 cv YAML(只含 cv: 區塊),寫入 output_path。"""
+    """組出 rendercv 看得懂的 cv YAML（只含 cv: 區塊），寫入 output_path。"""
     with get_session() as session:
         experience_entries = build_experience_entries(session, claim_ids, description_overrides)
         skills_entries = build_skills_section(session, claim_ids)
 
-    resume_content = {
+    cv_content = {
         "cv": {
             "name": name,
             "headline": headline,
@@ -146,54 +150,54 @@ def build_resume_yaml(
     }
 
     with open(output_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(resume_content, f, allow_unicode=True, sort_keys=False)
+        yaml.safe_dump(cv_content, f, allow_unicode=True, sort_keys=False)
 
     print(f"Generated {output_path} with {len(experience_entries)} experience entries.")
     return output_path
 
 
 # ---------------------------------------------------------------------------
-# 排版編譯:呼叫已安裝的 rendercv CLI
+# 排版編譯：呼叫已安裝的 rendercv CLI
 # ---------------------------------------------------------------------------
 
 def render_pdf(
     cv_yaml_path: pathlib.Path,
-    pdf_out_path: pathlib.Path,
     design_path: pathlib.Path | None = None,
     locale_path: pathlib.Path | None = None,
     settings_path: pathlib.Path | None = None,
 ) -> None:
-    """呼叫 `rendercv render` CLI,把 cv YAML 排版編譯成 PDF。"""
+    """呼叫 `rendercv render` CLI，把 cv YAML 排版編譯成 PDF。"""
     design_path = design_path or TEMPLATES_DIR / "design.yaml"
     locale_path = locale_path or TEMPLATES_DIR / "locale.yaml"
     settings_path = settings_path or TEMPLATES_DIR / "settings.yaml"
 
-    for f in [cv_yaml_path, design_path, locale_path, settings_path]:
-        if not f.exists():
-            print(f"[ERROR] 找不到檔案: {f}", file=sys.stderr)
+    for path in [cv_yaml_path, design_path, locale_path, settings_path]:
+        if not path.exists():
+            print(f"[ERROR] 找不到檔案: {path}", file=sys.stderr)
             sys.exit(1)
 
-    pdf_out_path.parent.mkdir(parents=True, exist_ok=True)
-
+    pdf_out_path = yaml.safe_load(open(settings_path, "r"))["settings"]["render_command"]["pdf_path"]
+        
     cmd = [
         "rendercv", "render", str(cv_yaml_path),
         "--design", str(design_path),
         "--locale-catalog", str(locale_path),
         "--settings", str(settings_path),
-        "--pdf-path", str(pdf_out_path),
-        "--dont-generate-markdown",
-        "--dont-generate-html",
-        "--dont-generate-png",
     ]
 
     print("[INFO] Running:", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
+    result = subprocess.run(cmd) #, capture_output=True, text=True)
+    
     if result.returncode != 0:
         print("[ERROR] rendercv 執行失敗:", file=sys.stderr)
-        print(result.stderr, file=sys.stderr)
+        if result.stderr:
+            print("--- stderr ---", file=sys.stderr)
+            print(result.stderr, file=sys.stderr)
+        if result.stdout:
+            print("--- stdout ---", file=sys.stderr)
+            print(result.stdout, file=sys.stderr)
         sys.exit(result.returncode)
 
     print(f"[OK] PDF 已產出: {pdf_out_path}")
-    if result.stdout:
-        print(result.stdout)
+
+    return pdf_out_path

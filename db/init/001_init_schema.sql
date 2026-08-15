@@ -92,7 +92,7 @@ CREATE TABLE claim_metric (
     metric_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     claim_id UUID REFERENCES claim(claim_id), /* 對應哪條結果聲稱 */
     metric_type TEXT, /* 效率提升 / 成本節省 / 品質改善 / 其他 */
-    metric_label TEXT, /* 這個數字代表什麼，例如「處理時間」「客戶滿意度」 */
+    metric_label TEXT, /* 這個數字代表什麼，例如「處理時間」「客戶滿意度」 */ /*tyahsin: pretty redundant*/
     metric_value TEXT, /* 數值本身，含單位/描述，例如「從5天降到2天」「約15%」 */
     metric_confidence TEXT /* 精確 / 估算 / 大致印象 -- 一律人工判定 */
 );
