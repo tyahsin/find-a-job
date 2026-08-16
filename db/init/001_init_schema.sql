@@ -3,6 +3,28 @@
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
+-- 個人資訊層
+CREATE TABLE identity (
+    identity_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name             TEXT NOT NULL,
+    location         TEXT NOT NULL,
+    visa_status      TEXT NOT NULL,  
+    email            TEXT NOT NULL,
+    phone            TEXT NOT NULL,
+    is_default       BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE network (
+    network_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    network         TEXT NOT NULL,        -- 例如 "GitHub", "LinkedIn", "Behance"
+    username        TEXT NOT NULL,
+    target_position TEXT [],     -- 這個連結適用的工種，例如 "Software Engineer", "Designer"
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- 公司層
 CREATE TABLE company (
     company_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -33,8 +55,13 @@ CREATE TABLE school (
 CREATE TABLE degree (
     degree_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     school_id UUID REFERENCES school(school_id),
-    degree_name TEXT, /* MA, MS, PhD, Short Program, etc. */
-    subject TEXT, /* Major, Minor, etc. in [area of study] */
+    degree_level TEXT, /* MA, MS, PhD, Short Program, etc. */
+    degree_type TEXT, /* Major, Minor, Concentration, etc. */
+    degree_name TEXT, 
+    degree_description TEXT, /* tyahsin: precompute：定版簡述，人工或LLM生成皆存在此欄位 */
+    degree_description_source TEXT DEFAULT NULL, /* 原始資料連結/路徑；NULL代表無原文，簡述為LLM生成 */
+    -- degree_honors TEXT [], /* tyahsin: cum laude, magna cum laude, summa cum laude, etc. */
+    -- degree_awards TEXT [], /* tyahsin: scholarships, fellowships, etc. */
     start_date DATE,
     end_date DATE NULL
 );
@@ -71,13 +98,7 @@ CREATE TABLE action (
     role_scope TEXT /* 主導/協同/支援 (Led/Collaborated/Supported) */
 );
 
--- 結果/聲稱層 (Result/Claim)
--- NOTE (Aug 2026): result_statement renamed to description for consistency
--- with problem.description / action.description naming. value_type /
--- metric / metric_confidence REMOVED from this table -- in practice a
--- single claim was found to often carry more than one quantifiable metric,
--- and not every metric cleanly fit these three fixed categories. Moved to
--- the new claim_metric table below (one-to-many).
+-- 結果/聲稱層 (Claim)
 CREATE TABLE claim (
     claim_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     action_id UUID REFERENCES action(action_id), /* 對應哪個行動產生此結果 */

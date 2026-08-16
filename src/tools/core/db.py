@@ -78,8 +78,10 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Text,
     create_engine,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -140,6 +142,37 @@ class Base(DeclarativeBase):
 def _uuid_pk() -> Column:
     return Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
+# ---------------------------------------------------------------------------
+# Identity layer / Network layer
+# ---------------------------------------------------------------------------
+
+class IdentityORM(Base):
+    __tablename__ = "identity"
+    __table_args__ = (
+        Index(
+            "identity_only_one_default",
+            "is_default",
+            unique=True,
+            postgresql_where=text("is_default = true"),
+        ),
+    )
+
+    identity_id = _uuid_pk()
+    name = Column(Text, nullable=False)
+    email = Column(Text, nullable=False)
+    phone = Column(Text, nullable=True)
+    location = Column(Text, nullable=True)         # current residence, e.g. "Tokyo, Japan"
+    visa_status = Column(Text, nullable=True)       # e.g. "Requires sponsorship"
+    is_default = Column(Boolean, nullable=False, default=False)
+
+
+class NetworkORM(Base):
+    __tablename__ = "network"
+
+    network_id = _uuid_pk()
+    network = Column(Text, nullable=False)          # e.g. "GitHub", "LinkedIn", "Behance"
+    username = Column(Text, nullable=False)          # account handle, e.g. "yahsintsai"
+    target_position = Column(ARRAY(Text), nullable=False)  # e.g. ["Software Engineer", "Data Scientist"]
 
 # ---------------------------------------------------------------------------
 # Company layer / School layer
@@ -187,8 +220,11 @@ class DegreeORM(Base):
 
     degree_id = _uuid_pk()
     school_id = Column(PGUUID(as_uuid=True), ForeignKey("school.school_id"))
-    degree_name = Column(Text)  # e.g. MA, MS, PhD, Short Program, etc.
-    subject = Column(Text)  # e.g. Major, Minor, area of study
+    degree_level = Column(Text)          # e.g. MA, MS, PhD, Short Program, etc.
+    degree_type = Column(Text)           # e.g. Major, Minor, Concentration, etc.
+    degree_name = Column(Text)           # the subject/area itself, e.g. "Computer Science"
+    degree_description = Column(Text, nullable=True)
+    degree_description_source = Column(Text, nullable=True)  # NULL => LLM-generated, no source doc
     start_date = Column(Date)
     end_date = Column(Date, nullable=True)
 

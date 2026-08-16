@@ -1,16 +1,34 @@
 """
 cli.py
-Version: v1
+Version: v2 (2026-08-15)
 
-gencv 的外層 CLI 入口，對外操作風格對齊 onboard/cli.py -- 日常使用直接跑這個檔案，
-不需要碰 pipeline.py / experience_matcher.py 等內部模組。
+Changelog:
+- v2 (2026-08-15):
+  1. --headline changed from required to optional (default None). If
+     omitted, pipeline.generate_cv() will attempt to extract it from the
+     job description text via identity_selector.extract_headline_from_jd()
+     -- see pipeline.py v3 changelog. If extraction also finds nothing,
+     headline stays unset and is omitted from the final YAML.
+  2. --name changed from a hardcoded default ("Ya Hsin Tsai") to optional
+     with no default. Rationale: name now comes from the selected identity
+     (see resume_builder.py v2 / pipeline.py -- identity.name is the source
+     of truth), --name is purely an optional per-run display override,
+     matching build_resume_yaml()'s v2 signature intent. A hardcoded
+     fallback name no longer makes sense once multiple identities exist.
+  3. Full English-only pass -- every CLI-facing string (help text, error
+     messages, success messages) converted from Chinese to English, per
+     the project-wide LANGUAGE POLICY established in onboard/prompts.py
+     (the entire interface is English-only, no exceptions).
+- v1 (2026-08-12, inferred): Initial outer CLI entrypoint, --out removed.
 
-用法（在 src/tools/ 目錄下執行）：
+Outer CLI entrypoint for the gencv package. Operating style matches
+onboard/cli.py -- day-to-day usage runs this file directly, no need to
+touch pipeline.py / experience_matcher.py or other internal modules.
+
+Usage (run from src/tools/):
+python -m gencv.cli generate --job-description-file jd.txt
 python -m gencv.cli generate --job-description-file jd.txt --headline "Data Scientist"
-python -m gencv.cli mark-reviewed
-
-實作備註（2026-08-12）：移除 --out 選項 -- 原本宣告了但沒有傳給 generate_cv()，
-形同虛設。PDF 輸出路徑一律由 templates/settings.yaml 的 pdf_path 決定。
+python -m gencv.cli mark-reviewed <output_id>
 """
 
 import pathlib
@@ -26,21 +44,29 @@ app = typer.Typer(help="gencv: Job Description -> Tailored CV PDF")
 @app.command("generate")
 def generate(
     job_description_file: str = typer.Option(
-        None, "--job-description-file", help="JD 文字檔路徑"
+        None, "--job-description-file", help="Path to a JD text file"
     ),
     job_description: str = typer.Option(
-        None, "--job-description", help="直接貼 JD 文字"
+        None, "--job-description", help="Paste JD text directly"
     ),
-    headline: str = typer.Option(..., "--headline", help="履歷標題，例如職位名稱"),
-    name: str = typer.Option("Ya Hsin Tsai", "--name", help="姓名"),
+    headline: str = typer.Option(
+        None,
+        "--headline",
+        help="Resume headline, e.g. target job title (optional -- extracted from the JD text if omitted)",
+    ),
+    name: str = typer.Option(
+        None,
+        "--name",
+        help="Display name override for this run (optional, defaults to the selected identity's name)",
+    ),
 ):
-    """篩選相關經歷 -> 逐條改寫確認 -> 排版編譯成 PDF -> 記錄投遞紀錄。"""
+    """Select relevant experiences -> confirm rewrites -> render to PDF -> log the application."""
     jd_text = job_description
     if job_description_file:
         jd_text = pathlib.Path(job_description_file).read_text(encoding="utf-8")
 
     if not jd_text:
-        typer.secho("必須提供 --job-description 或 --job-description-file", fg=typer.colors.RED)
+        typer.secho("Must provide either --job-description or --job-description-file", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     result_path, output_id = generate_cv(
@@ -53,10 +79,10 @@ def generate(
 
 
 @app.command("mark-reviewed")
-def mark_reviewed(output_id: str = typer.Argument(..., help="要標記為已複核的 output_id（UUID）")):
-    """把某次投遞紀錄的 human_review_status 標記為 True。"""
+def mark_reviewed(output_id: str = typer.Argument(..., help="The output_id (UUID) to mark as reviewed")):
+    """Mark a generated output's human_review_status as True."""
     _mark_reviewed(output_id)
-    typer.secho(f"已將 {output_id} 標記為已複核", fg=typer.colors.GREEN)
+    typer.secho(f"Marked {output_id} as reviewed", fg=typer.colors.GREEN)
 
 
 if __name__ == "__main__":

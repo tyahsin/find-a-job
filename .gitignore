@@ -1,6 +1,7 @@
 .DS_Store
 .env
 /db/data
+/db/init/003_seed_data.sql
 **/__pycache__/
 /venv
 /venv312

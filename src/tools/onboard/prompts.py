@@ -127,6 +127,48 @@ did not mention:
 
 Output the summary (plain text, no preamble):"""
 
+# ---------------------------------------------------------------------------
+# degree.degree_description
+# ---------------------------------------------------------------------------
+
+DEGREE_DESCRIPTION_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
+Purpose of this summary: describe the scope/focus of a degree program
+(degree.degree_description). This should be an objective description of
+what the program covered or focused on, not an achievement narrative.
+Suggested length: 2-4 sentences.
+"""
+
+
+def build_degree_description_prompt_from_source(source_text: str) -> str:
+    """Use when the user provided a source file (program syllabus,
+    transcript, degree description page, etc.) via
+    degree_description_source. The LLM summarizes the ACTUAL document
+    content -- it must not add scope beyond what's written."""
+    return f"""Below is the raw document content provided by the user (may be a
+program syllabus, transcript excerpt, or degree description page). Please
+summarize the part about the program's focus/scope into a concise summary:
+
+---
+{source_text}
+---
+
+Output the summary (plain text, no preamble):"""
+
+
+def build_degree_description_prompt_from_description(user_description: str) -> str:
+    """Use when the user has no source file and instead typed a rough
+    description of the program's focus. The LLM only polishes wording; it
+    must not add scope beyond what the user described."""
+    return f"""The user described the focus/scope of this degree program in their own
+words; the content may be casual or brief. Please organize it into a
+concise, professional summary without adding anything the user did not
+mention:
+
+---
+{user_description}
+---
+
+Output the summary (plain text, no preamble):"""
 
 # ---------------------------------------------------------------------------
 # project.project_context

@@ -99,6 +99,8 @@ from core.db import (
     DegreeORM,
     EvidenceORM,
     GovernanceORM,
+    IdentityORM,
+    NetworkORM,
     PositionORM,
     ProblemORM,
     ProjectORM,
@@ -113,30 +115,30 @@ from core.db import (
 )
 from core.file_reader import FileReadError, UnsupportedFileTypeError, read_source_file
 from core.llm_client import get_llm_client
-from onboard.prompts import (
-    ACTION_SYSTEM_PROMPT,
-    EVIDENCE_TYPE_TO_LEVEL,
-    METRIC_CONFIDENCE_OPTIONS,
-    METRIC_EXTRACTION_SYSTEM_PROMPT,
-    METRIC_TYPE_OPTIONS,
-    PROBLEM_SYSTEM_PROMPT,
-    PROJECT_CONTEXT_SYSTEM_PROMPT,
-    RESPONSIBILITY_SYSTEM_PROMPT,
-    RESULT_CLAIM_SYSTEM_PROMPT,
-    ROLE_SCOPE_OPTIONS,
-    TAG_SYSTEM_PROMPT,
-    VALUE_TYPE_OPTIONS,
-    build_action_prompt,
-    build_metric_extraction_prompt,
-    build_problem_prompt,
-    build_project_context_prompt,
-    build_responsibility_prompt_from_description,
-    build_responsibility_prompt_from_source,
-    build_result_claim_prompt,
-    build_tag_prompt,
-    parse_metric_response,
-    parse_tag_response,
-)
+from onboard.prompts import * # (
+#     ACTION_SYSTEM_PROMPT,
+#     EVIDENCE_TYPE_TO_LEVEL,
+#     METRIC_CONFIDENCE_OPTIONS,
+#     METRIC_EXTRACTION_SYSTEM_PROMPT,
+#     METRIC_TYPE_OPTIONS,
+#     PROBLEM_SYSTEM_PROMPT,
+#     PROJECT_CONTEXT_SYSTEM_PROMPT,
+#     RESPONSIBILITY_SYSTEM_PROMPT,
+#     RESULT_CLAIM_SYSTEM_PROMPT,
+#     ROLE_SCOPE_OPTIONS,
+#     TAG_SYSTEM_PROMPT,
+#     VALUE_TYPE_OPTIONS,
+#     build_action_prompt,
+#     build_metric_extraction_prompt,
+#     build_problem_prompt,
+#     build_project_context_prompt,
+#     build_responsibility_prompt_from_description,
+#     build_responsibility_prompt_from_source,
+#     build_result_claim_prompt,
+#     build_tag_prompt,
+#     parse_metric_response,
+#     parse_tag_response,
+# )
 
 app = typer.Typer()
 console = Console()
@@ -273,6 +275,215 @@ def _select_existing_school(session) -> SchoolORM:
         schools, [("School name", "school_name")], title="Select a school"
     )
 
+# ---------------------------------------------------------------------------
+# add-identity: personal identity records
+# ---------------------------------------------------------------------------
+
+def _validate_phone_format(phone: str) -> bool:
+    """Lightweight sanity check for RenderCV's phone format requirement --
+    international format with a leading '+' (e.g. +14155551234). This is
+    NOT a full libphonenumber validation (RenderCV does that authoritatively
+    at render time via pydantic_extra_types.phone_numbers.PhoneNumber) --
+    just catches the most common mistake (a bare local-format number like
+    "970813605") before it reaches the database."""
+    if not phone.startswith("+"):
+        return False
+    digits_only = phone[1:].replace("-", "").replace(" ", "")
+    return digits_only.isdigit() and len(digits_only) >= 7
+
+
+def _prompt_phone() -> str | None:
+    """Prompts for phone in RenderCV's required international format,
+    re-prompting on an obviously invalid entry rather than silently storing
+    a value that will fail validation later at render time."""
+    while True:
+        phone = typer.prompt(
+            "Phone in international format with country code, e.g. +14155551234 "
+            "(optional, leave blank to skip)",
+            default="",
+            show_default=False,
+        )
+        if not phone.strip():
+            return None
+        if _validate_phone_format(phone.strip()):
+            return phone.strip()
+        console.print(
+            "[red]Invalid format -- must start with '+' followed by the country code "
+            "and number, e.g. +14155551234. Try again, or leave blank to skip.[/red]"
+        )
+
+
+def _handle_default_flag(session, make_default: bool) -> None:
+    """If the user chooses to set this row as the new default, first flip
+    any existing default identity (if any) back to FALSE, to avoid hitting
+    the identity_only_one_default partial unique index."""
+    if not make_default:
+        return
+    existing_default = (
+        session.query(IdentityORM)
+        .filter(IdentityORM.is_default.is_(True))
+        .one_or_none()
+    )
+    if existing_default is not None:
+        existing_default.is_default = False
+        session.flush()
+
+
+@app.command("add-identity")
+def add_identity() -> None:
+    """Interactively add a personal identity record (name/email/phone/location/visa status)."""
+    with get_session() as session:
+        name = typer.prompt("Name")
+        email = typer.prompt("Email")
+        phone = _prompt_phone()
+        location = typer.prompt(
+            "Current location (e.g. Tokyo, Japan; optional, leave blank to skip)", default="", show_default=False
+        )
+        visa_status = typer.prompt(
+            "Visa status (e.g. 'Requires sponsorship'; optional, leave blank to skip)",
+            default="",
+            show_default=False,
+        )
+
+        existing_count = session.query(IdentityORM).count()
+        if existing_count == 0:
+            make_default = True
+            console.print("[dim](This is the first identity record -- automatically set as default)[/dim]")
+        else:
+            make_default = typer.confirm("Set this as the default identity (is_default)?", default=False)
+
+        if not _confirm_final_write():
+            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+            raise typer.Exit(code=0)
+
+        _handle_default_flag(session, make_default)
+
+        identity = create_row(
+            session,
+            IdentityORM,
+            {
+                "name": name,
+                "email": email,
+                "phone": phone,
+                "location": location or None,
+                "visa_status": visa_status or None,
+                "is_default": make_default,
+            },
+        )
+        identity_id = identity.identity_id
+
+    console.print(f"[green]Done! Identity ID: {identity_id}[/green]")
+    if make_default:
+        console.print("[green]Set as default identity.[/green]")
+
+
+# ---------------------------------------------------------------------------
+# add-network: social/portfolio links
+# ---------------------------------------------------------------------------
+# RENDERCV_SUPPORTED_NETWORKS mirrors RenderCV's own SocialNetworkName
+# Literal type exactly (see docs.rendercv.com/api_reference/schema/models/
+# cv/social_network/) -- any value outside this list will fail RenderCV's
+# validation at render time, so the CLI now restricts input to this fixed
+# menu instead of accepting free text (which previously allowed values
+# like "Behance" that RenderCV does not support).
+#
+# KNOWN GAP: username format is still not validated per-platform here.
+# Several networks have platform-specific username rules enforced by
+# RenderCV at render time (e.g. Mastodon needs "@user@domain", 
+# StackOverflow needs "user_id/username", IMDB needs "nmXXXXXXX", ORCID
+# needs "XXXX-XXXX-XXXX-XXX", WhatsApp needs an international phone
+# number). Not duplicated here to avoid drifting out of sync with
+# RenderCV's own validation logic -- a render-time failure on username
+# format will still surface clearly, just not at add-network time.
+
+RENDERCV_SUPPORTED_NETWORKS: list[str] = [
+    "LinkedIn",
+    "GitHub",
+    "GitLab",
+    "IMDB",
+    "Instagram",
+    "ORCID",
+    "Mastodon",
+    "StackOverflow",
+    "ResearchGate",
+    "YouTube",
+    "Google Scholar",
+    "Telegram",
+    "WhatsApp",
+    "Leetcode",
+    "X",
+    "Bluesky",
+    "Reddit",
+]
+
+
+def _prompt_network_platform() -> str:
+    """Fixed menu of RenderCV-supported platforms -- prevents entries that
+    would pass add-network but fail validation later at render time."""
+    console.print("\nSelect a platform (must match RenderCV's supported list):")
+    for i, platform in enumerate(RENDERCV_SUPPORTED_NETWORKS, 1):
+        console.print(f"  [{i}] {platform}")
+
+    choice = typer.prompt("Select a number", type=int)
+    return RENDERCV_SUPPORTED_NETWORKS[choice - 1]
+
+
+def _resolve_target_positions() -> list[str]:
+    """Repeatedly prompts for job titles this link applies to, Enter on
+    blank ends the loop, at least one is required."""
+    positions: list[str] = []
+    console.print(
+        "\nEnter the job title(s) this link applies to (e.g. Software Engineer), "
+        "one at a time. At least one is required. Press Enter on a blank line to finish:"
+    )
+    while True:
+        position = typer.prompt(
+            "Job title" + (" (leave blank to finish)" if positions else ""),
+            default="",
+            show_default=False,
+        )
+        if not position.strip():
+            if positions:
+                break
+            console.print("[red]At least one job title is required[/red]")
+            continue
+        positions.append(position.strip())
+    return positions
+
+
+@app.command("add-network")
+def add_network() -> None:
+    """Interactively add a social/portfolio link (platform/username/target positions).
+
+    Platform must be one of RenderCV's supported networks (fixed menu, not
+    free text) -- see RENDERCV_SUPPORTED_NETWORKS above. Username format is
+    NOT validated here per-platform; RenderCV will surface a clear error at
+    render time if the format doesn't match that platform's requirements
+    (e.g. Mastodon, StackOverflow, IMDB, ORCID, WhatsApp all have specific
+    username patterns).
+    """
+    with get_session() as session:
+        network_name = _prompt_network_platform()
+        username = typer.prompt(f"Username for {network_name} (e.g. yahsintsai)")
+        target_position = _resolve_target_positions()
+
+        if not _confirm_final_write():
+            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+            raise typer.Exit(code=0)
+
+        network = create_row(
+            session,
+            NetworkORM,
+            {
+                "network": network_name,
+                "username": username,
+                "target_position": target_position,
+            },
+        )
+        network_id = network.network_id
+
+    console.print(f"[green]Done! Network ID: {network_id}[/green]")
+    console.print(f"[green]Applies to: {', '.join(target_position)}[/green]")
 
 # ---------------------------------------------------------------------------
 # add-project (v1.9): flat position/degree selectors
@@ -507,35 +718,103 @@ def _resolve_position(session, company: CompanyORM) -> PositionORM:
     )
 
 
-def _resolve_degree(session, school: SchoolORM) -> DegreeORM:
+def _draft_degree_description() -> tuple[str, Optional[str]]:
+    """Returns (description_text, description_source). Mirrors
+    _draft_responsibility() exactly -- source-file-or-typed-description
+    dual entry point, LLM draft + _confirm_or_edit() gate."""
+    client = get_llm_client()
+    has_source = typer.confirm(
+        "Do you have a source document to base the degree description on (file path)?",
+        default=False,
+    )
+
+    if has_source:
+        while True:
+            path = typer.prompt("Enter file path (.txt / .md / .pdf)")
+            try:
+                source_text = read_source_file(path)
+                break
+            except (FileReadError, UnsupportedFileTypeError) as exc:
+                console.print(f"[red]{exc}[/red]")
+
+        response = client.generate_text(
+            system_prompt=DEGREE_DESCRIPTION_SYSTEM_PROMPT,
+            user_prompt=build_degree_description_prompt_from_source(source_text),
+        )
+        final_text = _confirm_or_edit(response.text, "Degree description")
+        return final_text, path
+
+    description = typer.prompt("Briefly describe the focus/scope of this degree program")
+    response = client.generate_text(
+        system_prompt=DEGREE_DESCRIPTION_SYSTEM_PROMPT,
+        user_prompt=build_degree_description_prompt_from_description(description),
+    )
+    final_text = _confirm_or_edit(response.text, "Degree description")
+    return final_text, None
+
+
+def _resolve_degree(session, school: "SchoolORM") -> "DegreeORM":
+    """v3: honors/awards prompts and fields removed -- see module docstring."""
     existing = list_rows(session, DegreeORM, school_id=school.school_id)
     if existing:
         chosen = _select_from_list(
             existing,
-            [("Degree/Program", "degree_name"), ("Subject", "subject"), ("Start date", "start_date")],
+            [("Degree level", "degree_level"), ("Subject", "degree_name"), ("Start date", "start_date")],
             title=f"Existing education records at {school.school_name}",
             allow_new_label="Add new education record",
         )
         if chosen is not None:
             return chosen
 
-    degree_name = typer.prompt("Degree/program name")
-    subject = typer.prompt("Subject", default="", show_default=False)
+    degree_level = typer.prompt("Degree level (e.g. MA, MS, PhD, Short Program)")
+    degree_type = typer.prompt("Degree type (e.g. Major, Minor, Concentration)", default="", show_default=False)
+    degree_name = typer.prompt("Subject / area of study (e.g. Computer Science)")
     start_dt = _prompt_date("Start date (YYYY-MM-DD)")
     end_dt = _prompt_date("End date (YYYY-MM-DD, leave blank)", allow_blank=True)
+
+    degree_description, degree_description_source = _draft_degree_description()
 
     return create_row(
         session,
         DegreeORM,
         {
             "school_id": school.school_id,
+            "degree_level": degree_level,
+            "degree_type": degree_type or None,
             "degree_name": degree_name,
-            "subject": subject or None,
+            "degree_description": degree_description,
+            "degree_description_source": degree_description_source,
             "start_date": start_dt,
             "end_date": end_dt,
         },
     )
 
+
+def _select_existing_degree_flat(session):
+    """No functional change from earlier versions -- add-project unaffected.
+    See module docstring for the display-semantics note on degree_name."""
+    rows = (
+        session.query(DegreeORM, SchoolORM)
+        .join(SchoolORM, DegreeORM.school_id == SchoolORM.school_id)
+        .all()
+    )
+
+    if not rows:
+        return None
+
+    table = Table(title="Select an existing education record, or create a new one")
+    table.add_column("#")
+    table.add_column("Institution")
+    table.add_column("Role")
+    table.add_row("0", "[Create new]", "")
+    for idx, (degree, school) in enumerate(rows, start=1):
+        table.add_row(str(idx), school.school_name or "", degree.degree_name or "")
+    console.print(table)
+
+    choice = typer.prompt("Select a number", type=int)
+    if choice == 0:
+        return None
+    return rows[choice - 1][0]
 
 # ---------------------------------------------------------------------------
 # Step 3: project

@@ -1,8 +1,19 @@
 """
 experience_matcher.py
-Version: v2 (2026-08-12)
+Version: v3 (2026-08-16)
 
 Changelog:
+- v3 (2026-08-16): Added degree.degree_id -> context["degree_id"] to
+  _EXPERIENCE_CONTEXT_SQL / fetch_experience_contexts(). This was missing
+  from v2 -- resume_builder.build_project_entries() needs each
+  education-track claim's degree_id to collect degree_ids_with_projects
+  (the set build_education_entries() uses to filter relevant_degrees down
+  to only degrees with at least one selected project underneath them).
+  Without this column, ctx.get("degree_id") was always None and the
+  education filtering logic in resume_builder.py silently produced an
+  empty education section every time. Also added project.project_id ->
+  context["project_id"] for symmetry (not currently consumed elsewhere,
+  but the query already joins through project).
 - v2 (2026-08-12): Fixed two gaps between this file's actual behavior and the
   intended design recorded in project notes:
   1. Governance filtering (_resolve_candidate_ids, replaces the old
@@ -30,12 +41,12 @@ relationship()，因此無法用 claim.action.problem... 這種屬性鏈存取�
 
 流程（computationally light 設計，依候選池規模 ~250-300 筆決定）：
 Step 1: 治理層過濾 -- 沒有 governance 紀錄的 claim 預設視為允許（對應 schema
-        allowed_for_generation BOOLEAN DEFAULT TRUE 的設計精神），只有明確
-        allowed_for_generation = False 的 claim 才被排除。
+allowed_for_generation BOOLEAN DEFAULT TRUE 的設計精神），只有明確
+allowed_for_generation = False 的 claim 才被排除。
 Step 2: 單次批次 LLM 判斷 -- 把全部候選經歷的摘要（含 tag 標籤）一次塞進同一個
-        prompt，只呼叫一次 LLM，請它直接回傳相關的 claim_id 清單。
-        取代「每筆經歷各呼叫一次 LLM」的作法；若未來候選池遠超 1000+ 筆規模，
-        可考慮在此步驟之前先加一層向量相似度粗篩（用 claim_chunks 的 embedding）。
+prompt，只呼叫一次 LLM，請它直接回傳相關的 claim_id 清單。
+取代「每筆經歷各呼叫一次 LLM」的作法；若未來候選池遠超 1000+ 筆規模，
+可考慮在此步驟之前先加一層向量相似度粗篩（用 claim_chunks 的 embedding）。
 """
 
 import re
@@ -66,6 +77,7 @@ SELECT
     action.role_scope,
     problem.description AS problem_description,
     problem.stakeholder_impact,
+    project.project_id,
     project.project_name,
     project.project_context,
     position.title AS position_title,
@@ -73,8 +85,9 @@ SELECT
     position.start_date AS position_start,
     position.end_date AS position_end,
     company.company_name,
+    degree.degree_id,
+    degree.degree_level,
     degree.degree_name,
-    degree.subject AS degree_subject,
     degree.start_date AS degree_start,
     degree.end_date AS degree_end,
     school.school_name
@@ -101,6 +114,11 @@ def fetch_experience_contexts(session, claim_ids: list[str]) -> dict[str, dict]:
 
     is_work_track=True 代表這筆經歷掛在 position（工作經歷）底下，
     False 代表掛在 degree（學業經歷）底下（project.position_id / degree_id 二擇一）。
+
+    degree_id（v3 新增）：is_work_track=False 時，這筆 claim 所屬的 degree_id
+    （字串形式）。resume_builder.build_project_entries() 用它來收集
+    degree_ids_with_projects，交給 build_education_entries() 篩選學位清單。
+    is_work_track=True 時此欄位為 None。
     """
     if not claim_ids:
         return {}
@@ -119,6 +137,7 @@ def fetch_experience_contexts(session, claim_ids: list[str]) -> dict[str, dict]:
             "role_scope": row["role_scope"],
             "problem_description": row["problem_description"],
             "stakeholder_impact": row["stakeholder_impact"],
+            "project_id": str(row["project_id"]) if row["project_id"] else None,
             "project_name": row["project_name"],
             "project_context": row["project_context"],
             "is_work_track": is_work_track,
@@ -126,6 +145,7 @@ def fetch_experience_contexts(session, claim_ids: list[str]) -> dict[str, dict]:
             "title": row["position_title"] if is_work_track else row["degree_name"],
             "start_date": row["position_start"] if is_work_track else row["degree_start"],
             "end_date": row["position_end"] if is_work_track else row["degree_end"],
+            "degree_id": str(row["degree_id"]) if (not is_work_track and row["degree_id"]) else None,
         }
     return contexts
 
@@ -163,8 +183,8 @@ def _resolve_candidate_ids(session) -> tuple[list[str], dict[str, GovernanceORM]
     Returns:
         candidate_ids: 允許進入候選池的 claim_id 字串清單。
         governance_map: claim_id -> GovernanceORM，只包含「確實有 governance
-            紀錄」的 claim（用於後續組 prompt 時讀取 use_policy/notes_for_llm；
-            沒有紀錄的 claim 在 governance_map 裡不存在，呼叫端應以「無」處理）。
+        紀錄」的 claim（用於後續組 prompt 時讀取 use_policy/notes_for_llm；
+        沒有紀錄的 claim 在 governance_map 裡不存在，呼叫端應以「無」處理）。
     """
     all_claim_ids = [str(row[0]) for row in session.query(ClaimORM.claim_id).all()]
 
@@ -175,6 +195,7 @@ def _resolve_candidate_ids(session) -> tuple[list[str], dict[str, GovernanceORM]
         cid for cid in all_claim_ids
         if governance_map.get(cid) is None or governance_map[cid].allowed_for_generation is not False
     ]
+
     return candidate_ids, governance_map
 
 
@@ -211,7 +232,6 @@ def _build_batch_prompt(
             f"    使用規範: use_policy={use_policy or '無'}, "
             f"notes_for_llm={notes_for_llm or '無'}"
         )
-
     experiences_block = "\n\n".join(lines)
     user_prompt = f"""# 職缺敘述（Job Description）
 {job_description}
@@ -242,7 +262,6 @@ def select_claims(job_description: str) -> list[str]:
         user_prompt, index_to_claim_id = _build_batch_prompt(
             candidate_ids, contexts, governances, tags_map, job_description
         )
-
         if not index_to_claim_id:
             return []
 
@@ -257,4 +276,5 @@ def select_claims(job_description: str) -> list[str]:
         selected_ids = [
             index_to_claim_id[i] for i in relevant_indices if i in index_to_claim_id
         ]
-        return selected_ids
+
+    return selected_ids
