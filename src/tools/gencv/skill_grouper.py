@@ -1,56 +1,31 @@
 """
 skill_grouper.py
-Version: v1 (2026-08-16)
+Version: v3 (2026-08-19)
 
-Solves the skill-section grouping mismatch problem: TagORM.tag_category
-(skill/domain/job_function) is a DATA-LAYER classification, chosen for
-governance/relevance-matching purposes (experience_matcher.py's tag
-signal). It is NOT designed to match how a specific job posting's
-audience expects skills to be grouped on a resume (e.g. "Programming
-Languages / Cloud & Infra / Data Tools" for a Data Engineer JD, vs.
-"Frontend / Backend / DevOps" for a different JD).
+Changelog:
+- v3 (2026-08-19): Migrated the REGENERATE gate in confirm_skill_grouping()
+  to the shared core.llm_reviewer.parse_review_input() parser -- same
+  single-line command contract as experience_rewriter.py v6 /
+  claim_ranker.py v3 / summary_writer.py v3: 'r' or 'r <text>' to
+  regenerate (previously a two-step prompt). Plain 'o' with no text, or
+  any unrecognized input, is now explicitly invalid and re-prompts with
+  an error. Regeneration semantics (wholesale replacement of the current
+  draft grouping, discarding any manual edits made so far in this
+  session, warning displayed before proceeding) are UNCHANGED from v2.
+- v2 (2026-08-19): Added a REGENERATE option to confirm_skill_grouping()'s
+  confirmation gate -- see prior changelog entry for full rationale
+  (two-step prompt flow, since replaced in v3 above).
+- v1 (2026-08-16): Initial version. Presentation-layer regrouping of
+  already-confirmed tags into JD-appropriate resume skill-section groups
+  (max 4 groups), with mandatory human confirmation, interactive
+  unplaced-tag resolution (no automatic "Other" bucket), and an
+  interactive add-new-group step.
 
-This module adds a PRESENTATION-LAYER regrouping step: a single batch LLM
-call takes the flat set of tag_names already selected for this resume
-(via the same claim_ids used elsewhere in the pipeline), plus their
-original tag_category as a soft hint (not a hard constraint), plus the
-job description, and asks the LLM to propose a JD-appropriate grouping
-for this resume -- capped at 4 groups.
+Safety rules (unchanged): the LLM may ONLY re-bucket existing tag_name
+strings into new group labels -- it may NOT invent, rename, merge the
+text of, or drop any tag_name.
 
-Design decisions (per user confirmation, 2026-08-16):
-1. MANDATORY human confirmation gate -- same safety pattern as
-experience_rewriter.py's _confirm_one() / summary_writer.py's
-confirm_summary().
-2. Hard cap: at most 4 groups. Prevents over-fragmentation.
-3. tag_category IS passed to the LLM as a soft signal (not enforced) --
-prevents unstable groupings and skill/domain conflation across runs
-(rejecting a zero-context design was an explicit user decision: without
-this hint, the same tag set could be split differently across runs of
-the same JD, and terms like "Machine Learning" are prone to being
-miscast as either a tool or a domain depending on phrasing alone).
-4. NO automatic fallback "Other" group for tags the LLM failed to place.
-Instead, any unplaced tag triggers an INTERACTIVE per-tag CLI prompt at
-confirmation time, where the user assigns it to an existing group or a
-newly-typed group name. Silently bucketing into "Other" was explicitly
-rejected by the user -- every unplaced tag requires an explicit human
-decision, not a catch-all default.
-5. A separate interactive CLI step lets the user add brand-new groups
-beyond what the LLM proposed (e.g. splitting one drafted group into two,
-or introducing a group the LLM didn't think of), independent of whether
-there are any unplaced tags.
-
-Safety rules (same family as experience_rewriter.py / education_selector.py):
-- The LLM may ONLY re-bucket existing tag_name strings into new group
-labels. It may NOT invent, rename, merge the text of, or drop any
-tag_name. Every tag_name given in the input must appear in exactly one
-final group after the human confirmation step (LLM output need not be
-complete -- confirm_skill_grouping() closes any gaps interactively).
-- English-only prompts and output, per the project-wide LANGUAGE POLICY.
-
-Consumed by resume_builder.py v13's build_skills_section(), which now
-requires a job_description parameter to pass through to this module,
-replacing the previous hardcoded label_map = {"skill": "Skills", "domain":
-"Domain Knowledge", "job_function": "Functions"} static grouping.
+English-only prompts and output, per the project-wide LANGUAGE POLICY.
 """
 
 from __future__ import annotations
@@ -59,46 +34,41 @@ import json
 import re
 
 from core.llm_client import get_llm_client
+from core.llm_reviewer import parse_review_input
 
 MAX_GROUPS = 4
 
-GROUPING_SYSTEM_PROMPT = f"""You are a resume skills-section organizer. You will be given a target job
+GROUPING_SYSTEM_PROMPT = """You are a resume skills-section organizer. You will be given a target job
 description and a flat list of skill/knowledge tags the candidate has
 already confirmed apply to this resume. Each tag also comes with its
 original data-layer category (skill / domain / job_function) as a hint,
-but that category system is NOT meant for resume presentation -- it is
-an internal classification and may not match how a reader of this
-specific job posting would expect skills to be grouped.
+but that category system is NOT meant for resume presentation.
 
 Your task: propose new group labels and assign every tag to exactly one
 group, choosing groupings that make sense for THIS job description's
-domain and terminology (e.g. "Programming Languages", "Cloud & Infrastructure",
-"Data Tools", "Leadership & Collaboration" -- choose labels appropriate
-to the actual tags and JD, do not just copy this example).
+domain and terminology.
+
+{steering_note_block}
 
 Strict rules (must follow):
-1. HARD LIMIT: produce AT MOST {MAX_GROUPS} groups. Fewer is fine if that
-better fits the tags given -- do not pad to reach {MAX_GROUPS}.
+1. HARD LIMIT: produce AT MOST 4 groups. Fewer is fine if that better
+   fits the tags given -- do not pad to reach 4.
 2. Try to place every tag in the input list into exactly one output
-group. If a tag genuinely does not fit any sensible group, it is
-better to leave it out than to force it somewhere wrong -- a human
-will resolve any leftover tags afterward.
+   group. If a tag genuinely does not fit any sensible group, it is
+   better to leave it out than to force it somewhere wrong.
 3. Do NOT change the text of any tag -- copy each tag_name exactly as
-given, verbatim.
-4. The original category (skill/domain/job_function) is a hint about
-what KIND of thing each tag is -- use it to avoid conflating skills
-with domain knowledge, but you are free to split, merge, or relabel
-across that boundary if the job description calls for it.
+   given, verbatim.
+4. The original category is a hint, not a hard constraint -- you are
+   free to split, merge, or relabel across that boundary if the job
+   description calls for it.
 5. Choose group labels that are natural, resume-appropriate section
-headers (Title Case, 1-4 words each) -- not generic labels like
-"Category 1".
+   headers (Title Case, 1-4 words each).
 6. Output must be in English, regardless of input language.
 
 Output format: output ONLY a valid JSON object mapping each group label
-(string) to a list of tag_name strings, and nothing else -- no preamble,
-no explanation, no markdown code fences.
-Example shape (illustrative only, do not copy these exact labels/tags):
-{{"Programming Languages": ["Python", "SQL"], "Cloud & Infrastructure": ["Docker", "AWS"]}}"""
+to a list of tag_name strings, and nothing else -- no preamble, no
+markdown code fences.
+Example shape (illustrative only): {{"Programming Languages": ["Python", "SQL"], "Cloud & Infrastructure": ["Docker", "AWS"]}}"""
 
 GROUPING_USER_PROMPT_TEMPLATE = """# Job Description
 {job_description}
@@ -109,18 +79,14 @@ GROUPING_USER_PROMPT_TEMPLATE = """# Job Description
 Output the grouped JSON (at most {max_groups} groups):"""
 
 
-def _format_tags_block(tags_with_category: list[tuple[str, str]]) -> str:
+def _format_tags_block(tags_with_category):
     lines = []
     for tag_name, tag_category in tags_with_category:
         lines.append(f"- {tag_name} (original category: {tag_category})")
     return "\n".join(lines)
 
 
-def _parse_grouping_response(raw_response: str, all_tag_names: set[str]) -> dict[str, list[str]]:
-    """Tolerant JSON parsing + validation: unknown tags the LLM might have
-    invented are dropped. Tags the LLM left out are intentionally NOT
-    auto-bucketed here -- they are surfaced to confirm_skill_grouping()
-    as unplaced, for interactive resolution (no silent 'Other' bucket)."""
+def _parse_grouping_response(raw_response, all_tag_names):
     cleaned = re.sub(r"^```(?:json)?|```$", "", raw_response.strip(), flags=re.MULTILINE).strip()
     try:
         parsed = json.loads(cleaned)
@@ -130,8 +96,8 @@ def _parse_grouping_response(raw_response: str, all_tag_names: set[str]) -> dict
     if not isinstance(parsed, dict):
         return {}
 
-    seen: set[str] = set()
-    result: dict[str, list[str]] = {}
+    seen = set()
+    result = {}
     for label, tags in list(parsed.items())[:MAX_GROUPS]:
         if not isinstance(tags, list):
             continue
@@ -143,16 +109,22 @@ def _parse_grouping_response(raw_response: str, all_tag_names: set[str]) -> dict
     return result
 
 
-def draft_skill_grouping(
-    tags_with_category: list[tuple[str, str]], job_description: str
-) -> dict[str, list[str]]:
-    """Single batch LLM call. Returns {group_label: [tag_name, ...]},
-    capped at MAX_GROUPS groups. May not cover every input tag -- any
-    gaps are resolved interactively in confirm_skill_grouping()."""
+def draft_skill_grouping(tags_with_category, job_description, steering_note=None):
     if not tags_with_category:
         return {}
 
     all_tag_names = {t for t, _ in tags_with_category}
+
+    if steering_note:
+        steering_note_block = (
+            "The user was not satisfied with a previous grouping attempt and gave this "
+            "steering note for how to group differently this time -- treat it as an "
+            "additional preference on top of the rules above (never as license to rename, "
+            "invent, or drop a tag_name):\n"
+            f'"{steering_note}"'
+        )
+    else:
+        steering_note_block = ""
 
     user_prompt = GROUPING_USER_PROMPT_TEMPLATE.format(
         job_description=job_description,
@@ -160,45 +132,35 @@ def draft_skill_grouping(
         tags_block=_format_tags_block(tags_with_category),
         max_groups=MAX_GROUPS,
     )
-
     response = get_llm_client().generate_text(
-        system_prompt=GROUPING_SYSTEM_PROMPT,
+        system_prompt=GROUPING_SYSTEM_PROMPT.format(steering_note_block=steering_note_block),
         user_prompt=user_prompt,
-        temperature=0.2,
+        temperature=0.2 if not steering_note else 0.4,
         max_tokens=800,
     )
-
     return _parse_grouping_response(response.text, all_tag_names)
 
 
-def _prompt_assign_unplaced_tag(tag_name: str, group_labels: list[str]) -> str:
-    """Interactive per-tag resolution for a single unplaced tag. Lets the
-    user pick an existing group by number, or type a brand-new group
-    name on the spot."""
-    print(f"\n Unplaced tag: '{tag_name}'")
+def _prompt_assign_unplaced_tag(tag_name, group_labels):
+    print(f"\n  Unplaced tag: '{tag_name}'")
     for i, label in enumerate(group_labels, 1):
-        print(f"   [{i}] {label}")
-    print(f"   [{len(group_labels) + 1}] Create a new group for this tag")
+        print(f"    [{i}] {label}")
+    print(f"    [{len(group_labels) + 1}] Create a new group for this tag")
 
-    choice = input(" Assign to which group? (enter a number, or type a new group name): ").strip()
+    choice = input("  Assign to which group? (enter a number, or type a new group name): ").strip()
 
     if choice.isdigit():
         idx = int(choice)
         if 1 <= idx <= len(group_labels):
             return group_labels[idx - 1]
         if idx == len(group_labels) + 1:
-            new_label = input(" New group name: ").strip()
+            new_label = input("  New group name: ").strip()
             return new_label or "Skills"
 
     return choice if choice else "Skills"
 
 
-def _resolve_unplaced_tags(
-    grouping: dict[str, list[str]], all_tag_names: set[str]
-) -> dict[str, list[str]]:
-    """Finds any tag from the original input that the LLM didn't place
-    into a group, and resolves each one interactively -- no automatic
-    'Other' fallback."""
+def _resolve_unplaced_tags(grouping, all_tag_names):
     placed = {t for tags in grouping.values() for t in tags}
     unplaced = sorted(all_tag_names - placed)
 
@@ -213,32 +175,25 @@ def _resolve_unplaced_tags(
     return grouping
 
 
-def _prompt_add_new_groups(grouping: dict[str, list[str]]) -> dict[str, list[str]]:
-    """Lets the user add brand-new groups on top of the (already-resolved)
-    grouping, e.g. splitting an existing group into two. Independent of
-    whether there were any unplaced tags."""
-    choice = input(
-        "\n Add a new group by moving tags out of existing ones? (y/N): "
-    ).strip().lower()
+def _prompt_add_new_groups(grouping):
+    choice = input("\n  Add a new group by moving tags out of existing ones? (y/N): ").strip().lower()
 
     if choice != "y":
         return grouping
 
     while True:
-        new_label = input(" New group name (leave blank to stop adding groups): ").strip()
+        new_label = input("  New group name (leave blank to stop adding groups): ").strip()
         if not new_label:
             break
 
-        print(" Current tags by group:")
+        print("  Current tags by group:")
         for label, tags in grouping.items():
-            print(f"   [{label}]: {', '.join(tags)}")
+            print(f"    [{label}]: {', '.join(tags)}")
 
-        raw_tags = input(
-            f" Which tags should move into '{new_label}'? (comma-separated, exact names): "
-        ).strip()
+        raw_tags = input(f"  Which tags should move into '{new_label}'? (comma-separated, exact names): ").strip()
         tags_to_move = [t.strip() for t in raw_tags.split(",") if t.strip()]
 
-        moved: list[str] = []
+        moved = []
         for label in list(grouping.keys()):
             remaining = []
             for t in grouping[label]:
@@ -251,46 +206,66 @@ def _prompt_add_new_groups(grouping: dict[str, list[str]]) -> dict[str, list[str
         grouping[new_label] = moved
         grouping = {label: tags for label, tags in grouping.items() if tags}
 
-        print(f" -> Created '{new_label}' with: {', '.join(moved) if moved else '(no tags matched)'}")
+        print(f"  -> Created '{new_label}' with: {', '.join(moved) if moved else '(no tags matched)'}")
 
     return grouping
 
 
-def confirm_skill_grouping(
-    drafted_grouping: dict[str, list[str]], all_tag_names: set[str]
-) -> dict[str, list[str]]:
-    """Mandatory human confirmation gate. Three steps, in order:
-    1. Display the drafted grouping.
-    2. Interactively resolve any tag the LLM left unplaced (no auto
-    'Other' bucket -- user explicitly assigns each one).
-    3. Optionally let the user carve out additional new groups.
-    """
+def confirm_skill_grouping(drafted_grouping, all_tag_names, tags_with_category=None, job_description=None):
+    """(v3) Uses core.llm_reviewer.parse_review_input(). Commands:
+    Enter=accept, 'r'/'r <text>'=regenerate. Any other input (including
+    plain 'o') is invalid here -- this gate has no manual free-text
+    override of its own; manual adjustments happen via the unplaced-tag
+    and add-new-group steps below."""
     print("\n=== Proposed skills-section grouping (max 4 groups) ===")
 
     if not drafted_grouping and not all_tag_names:
-        print(" [Notice] No tags to group for this resume.")
+        print("  [Notice] No tags to group for this resume.")
         return {}
 
-    for label, tags in drafted_grouping.items():
-        print(f" [{label}]: {', '.join(tags)}")
+    current_grouping = dict(drafted_grouping)
 
-    grouping = _resolve_unplaced_tags(dict(drafted_grouping), all_tag_names)
+    while True:
+        for label, tags in current_grouping.items():
+            print(f"  [{label}]: {', '.join(tags)}")
+
+        raw = input("\n  Accept this grouping? (Enter to accept and continue / 'r' or 'r <text>' to regenerate): ").strip()
+        decision = parse_review_input(raw)
+
+        if decision.action == "regenerate":
+            if tags_with_category is None or job_description is None:
+                print(
+                    "  [Warning] Cannot regenerate -- this grouping was confirmed without "
+                    "tags_with_category/job_description context. Continuing with the current draft."
+                )
+                break
+
+            print(
+                "  [Notice] Regenerating replaces the current draft entirely -- any manual "
+                "group edits made so far in this session will be discarded."
+            )
+            current_grouping = draft_skill_grouping(tags_with_category, job_description, steering_note=decision.value)
+            continue
+
+        if decision.action == "accept":
+            break
+
+        print(f"  [Error] {decision.value}")
+
+    grouping = _resolve_unplaced_tags(current_grouping, all_tag_names)
     grouping = _prompt_add_new_groups(grouping)
 
     print("\n=== Final skills-section grouping ===")
     for label, tags in grouping.items():
-        print(f" [{label}]: {', '.join(tags)}")
+        print(f"  [{label}]: {', '.join(tags)}")
 
     return grouping
 
 
-def group_skills_for_jd(
-    tags_with_category: list[tuple[str, str]], job_description: str
-) -> dict[str, list[str]]:
-    """Main entry point: single LLM draft + mandatory interactive human
-    confirmation (including resolving unplaced tags and optionally adding
-    new groups). Returns the final {group_label: [tag_name, ...]} mapping
-    to render into the resume's skills section."""
+def group_skills_for_jd(tags_with_category, job_description):
     all_tag_names = {t for t, _ in tags_with_category}
     drafted = draft_skill_grouping(tags_with_category, job_description)
-    return confirm_skill_grouping(drafted, all_tag_names)
+    return confirm_skill_grouping(
+        drafted, all_tag_names,
+        tags_with_category=tags_with_category, job_description=job_description,
+    )
