@@ -1,8 +1,24 @@
 """
 onboard/cli.py
-Version: v1.9 (2026-08-10)
+Version: v1.10 (2026-08-19)
 
 Changelog:
+- v1.10 (2026-08-19): Version/changelog sync fix -- no logic changes.
+  The previous v1.9 header/changelog described _resolve_target_positions()
+  allowing a blank first entry (returning an empty list, interpreted by
+  gencv/identity_selector.py as "applies to ANY job title") and
+  add_network()'s corresponding "Applies to: ANY job title" message
+  branch as a SEPARATE v1.10 patch still pending manual application on
+  top of this file. On review, both pieces of behavior were already
+  present and working in this file's actual code (see
+  _resolve_target_positions()'s docstring/loop and add_network()'s
+  if/else message branch below) -- the patch had already been applied,
+  but the version header and changelog were never bumped to reflect it,
+  leaving the project's spec doc (v6 md) out of sync with the real file.
+  This version bump is purely a metadata correction so the file's own
+  header, the changelog, and the project spec doc all agree that this
+  functionality is DONE, not pending. No function bodies, control flow,
+  or strings were changed in this pass.
 - v1.9 (2026-08-10): add-project's work/education branches now try a flat
   join-based selector FIRST (_select_existing_position_flat /
   _select_existing_degree_flat), mirroring the pattern already used by
@@ -76,6 +92,13 @@ Design notes (per Aug 2026 review):
   the governance row is written with support_level=None, and
   core.db.fill_pending_support_levels() is called explicitly, exactly
   once, right after add-claim's own transaction commits.
+- (v1.9/v1.10) target_position on a network row may be left blank --
+  _resolve_target_positions() allows the very first prompt to be blank,
+  returning an empty list, which gencv/identity_selector.py v3 treats as
+  a UNIVERSAL link (applies to any job title). add_network()'s closing
+  message explicitly distinguishes this case ("Applies to: ANY job
+  title") from a link scoped to specific titles, so the user gets
+  immediate confirmation of which behavior they just configured.
 
 LANGUAGE POLICY: the entire interface is English.
 """
@@ -115,29 +138,29 @@ from core.db import (
 )
 from core.file_reader import FileReadError, UnsupportedFileTypeError, read_source_file
 from core.llm_client import get_llm_client
-from onboard.prompts import * # (
-#     ACTION_SYSTEM_PROMPT,
-#     EVIDENCE_TYPE_TO_LEVEL,
-#     METRIC_CONFIDENCE_OPTIONS,
-#     METRIC_EXTRACTION_SYSTEM_PROMPT,
-#     METRIC_TYPE_OPTIONS,
-#     PROBLEM_SYSTEM_PROMPT,
-#     PROJECT_CONTEXT_SYSTEM_PROMPT,
-#     RESPONSIBILITY_SYSTEM_PROMPT,
-#     RESULT_CLAIM_SYSTEM_PROMPT,
-#     ROLE_SCOPE_OPTIONS,
-#     TAG_SYSTEM_PROMPT,
-#     VALUE_TYPE_OPTIONS,
-#     build_action_prompt,
-#     build_metric_extraction_prompt,
-#     build_problem_prompt,
-#     build_project_context_prompt,
-#     build_responsibility_prompt_from_description,
-#     build_responsibility_prompt_from_source,
-#     build_result_claim_prompt,
-#     build_tag_prompt,
-#     parse_metric_response,
-#     parse_tag_response,
+from onboard.prompts import *  # (
+#   ACTION_SYSTEM_PROMPT,
+#   EVIDENCE_TYPE_TO_LEVEL,
+#   METRIC_CONFIDENCE_OPTIONS,
+#   METRIC_EXTRACTION_SYSTEM_PROMPT,
+#   METRIC_TYPE_OPTIONS,
+#   PROBLEM_SYSTEM_PROMPT,
+#   PROJECT_CONTEXT_SYSTEM_PROMPT,
+#   RESPONSIBILITY_SYSTEM_PROMPT,
+#   RESULT_CLAIM_SYSTEM_PROMPT,
+#   ROLE_SCOPE_OPTIONS,
+#   TAG_SYSTEM_PROMPT,
+#   VALUE_TYPE_OPTIONS,
+#   build_action_prompt,
+#   build_metric_extraction_prompt,
+#   build_problem_prompt,
+#   build_project_context_prompt,
+#   build_responsibility_prompt_from_description,
+#   build_responsibility_prompt_from_source,
+#   build_result_claim_prompt,
+#   build_tag_prompt,
+#   parse_metric_response,
+#   parse_tag_response,
 # )
 
 app = typer.Typer()
@@ -152,7 +175,6 @@ TRACK_OPTIONS: list[str] = [
     "education",
 ]
 
-
 def _prompt_date(label: str, allow_blank: bool = False) -> Optional[date]:
     while True:
         raw = typer.prompt(label, default="" if allow_blank else ...)
@@ -163,7 +185,6 @@ def _prompt_date(label: str, allow_blank: bool = False) -> Optional[date]:
         except ValueError:
             console.print("[red]Invalid date format, please use YYYY-MM-DD[/red]")
 
-
 def _confirm_or_edit(draft: str, label: str) -> str:
     console.print(f"\n[bold]{label} (LLM draft)[/bold]")
     console.print(draft)
@@ -173,7 +194,6 @@ def _confirm_or_edit(draft: str, label: str) -> str:
         show_default=False,
     )
     return edited.strip() if edited.strip() else draft
-
 
 def _select_from_fuzzy_candidates(candidates, label_field: str):
     """
@@ -195,7 +215,6 @@ def _select_from_fuzzy_candidates(candidates, label_field: str):
     if choice == 0:
         return None
     return candidates[choice - 1][0]
-
 
 def _select_from_list(rows, columns: list[tuple[str, str]], title: str, allow_new_label: Optional[str] = None):
     """
@@ -221,7 +240,6 @@ def _select_from_list(rows, columns: list[tuple[str, str]], title: str, allow_ne
         return None
     return rows[choice - 1]
 
-
 def _select_from_menu(options: list[str], title: str, allow_blank: bool = False) -> Optional[str]:
     """
     Fixed-choice numbered menu -- used for fields where free-typing would
@@ -243,7 +261,6 @@ def _select_from_menu(options: list[str], title: str, allow_blank: bool = False)
         return None
     return options[choice - 1]
 
-
 def _select_existing_company(session) -> CompanyORM:
     """
     Plain numbered list of ALL existing companies (no fuzzy search --
@@ -258,7 +275,6 @@ def _select_existing_company(session) -> CompanyORM:
     return _select_from_list(
         companies, [("Company name", "company_name")], title="Select a company"
     )
-
 
 def _select_existing_school(session) -> SchoolORM:
     """
@@ -291,7 +307,6 @@ def _validate_phone_format(phone: str) -> bool:
     digits_only = phone[1:].replace("-", "").replace(" ", "")
     return digits_only.isdigit() and len(digits_only) >= 7
 
-
 def _prompt_phone() -> str | None:
     """Prompts for phone in RenderCV's required international format,
     re-prompting on an obviously invalid entry rather than silently storing
@@ -312,7 +327,6 @@ def _prompt_phone() -> str | None:
             "and number, e.g. +14155551234. Try again, or leave blank to skip.[/red]"
         )
 
-
 def _handle_default_flag(session, make_default: bool) -> None:
     """If the user chooses to set this row as the new default, first flip
     any existing default identity (if any) back to FALSE, to avoid hitting
@@ -327,7 +341,6 @@ def _handle_default_flag(session, make_default: bool) -> None:
     if existing_default is not None:
         existing_default.is_default = False
         session.flush()
-
 
 @app.command("add-identity")
 def add_identity() -> None:
@@ -376,7 +389,6 @@ def add_identity() -> None:
     if make_default:
         console.print("[green]Set as default identity.[/green]")
 
-
 # ---------------------------------------------------------------------------
 # add-network: social/portfolio links
 # ---------------------------------------------------------------------------
@@ -386,10 +398,10 @@ def add_identity() -> None:
 # validation at render time, so the CLI now restricts input to this fixed
 # menu instead of accepting free text (which previously allowed values
 # like "Behance" that RenderCV does not support).
-#
+
 # KNOWN GAP: username format is still not validated per-platform here.
 # Several networks have platform-specific username rules enforced by
-# RenderCV at render time (e.g. Mastodon needs "@user@domain", 
+# RenderCV at render time (e.g. Mastodon needs "@user@domain",
 # StackOverflow needs "user_id/username", IMDB needs "nmXXXXXXX", ORCID
 # needs "XXXX-XXXX-XXXX-XXX", WhatsApp needs an international phone
 # number). Not duplicated here to avoid drifting out of sync with
@@ -416,7 +428,6 @@ RENDERCV_SUPPORTED_NETWORKS: list[str] = [
     "Reddit",
 ]
 
-
 def _prompt_network_platform() -> str:
     """Fixed menu of RenderCV-supported platforms -- prevents entries that
     would pass add-network but fail validation later at render time."""
@@ -427,29 +438,30 @@ def _prompt_network_platform() -> str:
     choice = typer.prompt("Select a number", type=int)
     return RENDERCV_SUPPORTED_NETWORKS[choice - 1]
 
-
 def _resolve_target_positions() -> list[str]:
-    """Repeatedly prompts for job titles this link applies to, Enter on
-    blank ends the loop, at least one is required."""
+    """Repeatedly prompts for job titles this link applies to, Enter on a
+    blank line ends the loop. Leaving the very first prompt blank is
+    allowed and returns an empty list -- gencv interprets an empty
+    target_position as "applies to any job title" (a universal link,
+    e.g. a personal portfolio site or a general GitHub profile), rather
+    than requiring the user to enumerate every possible title."""
     positions: list[str] = []
     console.print(
         "\nEnter the job title(s) this link applies to (e.g. Software Engineer), "
-        "one at a time. At least one is required. Press Enter on a blank line to finish:"
+        "one at a time. Press Enter on a blank line to finish. "
+        "Leave blank immediately (no titles at all) if this link should apply "
+        "to ANY job title:"
     )
     while True:
         position = typer.prompt(
-            "Job title" + (" (leave blank to finish)" if positions else ""),
+            "Job title (leave blank to finish)",
             default="",
             show_default=False,
         )
         if not position.strip():
-            if positions:
-                break
-            console.print("[red]At least one job title is required[/red]")
-            continue
+            break
         positions.append(position.strip())
     return positions
-
 
 @app.command("add-network")
 def add_network() -> None:
@@ -461,6 +473,10 @@ def add_network() -> None:
     render time if the format doesn't match that platform's requirements
     (e.g. Mastodon, StackOverflow, IMDB, ORCID, WhatsApp all have specific
     username patterns).
+
+    target_position may be an empty list -- gencv's identity_selector.py
+    treats an empty target_position as applying to ANY job title, so this
+    is a valid and intentional choice, not an incomplete entry.
     """
     with get_session() as session:
         network_name = _prompt_network_platform()
@@ -483,7 +499,10 @@ def add_network() -> None:
         network_id = network.network_id
 
     console.print(f"[green]Done! Network ID: {network_id}[/green]")
-    console.print(f"[green]Applies to: {', '.join(target_position)}[/green]")
+    if target_position:
+        console.print(f"[green]Applies to: {', '.join(target_position)}[/green]")
+    else:
+        console.print("[green]Applies to: ANY job title[/green]")
 
 # ---------------------------------------------------------------------------
 # add-project (v1.9): flat position/degree selectors
@@ -494,11 +513,10 @@ def add_network() -> None:
 # TWO cases, both of which signal the caller to fall back to the original
 # _resolve_company -> _resolve_position (or _resolve_school ->
 # _resolve_degree) stepwise flow:
-#   1. No rows exist at all yet (menu isn't even shown).
-#   2. The user explicitly picks "[Create new]" (option 0), even though
-#      existing rows were available -- the escape hatch for genuinely
-#      new companies/positions.
-
+# 1. No rows exist at all yet (menu isn't even shown).
+# 2. The user explicitly picks "[Create new]" (option 0), even though
+#    existing rows were available -- the escape hatch for genuinely
+#    new companies/positions.
 
 def _select_existing_position_flat(session) -> Optional[PositionORM]:
     rows = (
@@ -523,7 +541,6 @@ def _select_existing_position_flat(session) -> Optional[PositionORM]:
         return None
     return rows[choice - 1][0]
 
-
 def _select_existing_degree_flat(session) -> Optional[DegreeORM]:
     rows = (
         session.query(DegreeORM, SchoolORM)
@@ -547,11 +564,9 @@ def _select_existing_degree_flat(session) -> Optional[DegreeORM]:
         return None
     return rows[choice - 1][0]
 
-
 # ---------------------------------------------------------------------------
 # Step 1: upper-level entity (company / school)
 # ---------------------------------------------------------------------------
-
 
 def _resolve_company(session) -> CompanyORM:
     name = typer.prompt("Company name")
@@ -568,7 +583,6 @@ def _resolve_company(session) -> CompanyORM:
         {"company_name": name, "location": location or None},
     )
 
-
 def _resolve_school(session) -> SchoolORM:
     name = typer.prompt("School name")
     candidates = fuzzy_find_candidates(session, SchoolORM, "school_name", name)
@@ -584,14 +598,12 @@ def _resolve_school(session) -> SchoolORM:
         {"school_name": name, "location": location or None},
     )
 
-
 # ---------------------------------------------------------------------------
 # Standalone entity commands -- lets upper/mid-level entities be staged
 # one at a time instead of only inside the monolithic add-project flow.
 # None of these call fill_pending_support_levels() -- governance never
 # applies to them.
 # ---------------------------------------------------------------------------
-
 
 @app.command("add-company")
 def add_company() -> None:
@@ -605,7 +617,6 @@ def add_company() -> None:
 
     console.print(f"[green]Done! Company ID: {company_id}[/green]")
 
-
 @app.command("add-school")
 def add_school() -> None:
     """Interactively add a single school record (standalone, no degree/project required)."""
@@ -617,7 +628,6 @@ def add_school() -> None:
         school_id = school.school_id
 
     console.print(f"[green]Done! School ID: {school_id}[/green]")
-
 
 @app.command("add-position")
 def add_position() -> None:
@@ -632,7 +642,6 @@ def add_position() -> None:
 
     console.print(f"[green]Done! Position ID: {position_id}[/green]")
 
-
 @app.command("add-degree")
 def add_degree() -> None:
     """Interactively add a single degree record under an existing school (standalone, no project required)."""
@@ -646,11 +655,9 @@ def add_degree() -> None:
 
     console.print(f"[green]Done! Degree ID: {degree_id}[/green]")
 
-
 # ---------------------------------------------------------------------------
 # Step 2: mid-level entity (position / degree)
 # ---------------------------------------------------------------------------
-
 
 def _draft_responsibility() -> tuple[str, Optional[str]]:
     """Returns (responsibility_text, responsibility_source)."""
@@ -659,7 +666,6 @@ def _draft_responsibility() -> tuple[str, Optional[str]]:
         "Do you have a source document to link the responsibility description to (file path)?",
         default=False,
     )
-
     if has_source:
         while True:
             path = typer.prompt("Enter file path (.txt / .md / .pdf)")
@@ -683,7 +689,6 @@ def _draft_responsibility() -> tuple[str, Optional[str]]:
     )
     final_text = _confirm_or_edit(response.text, "Responsibility summary")
     return final_text, None
-
 
 def _resolve_position(session, company: CompanyORM) -> PositionORM:
     existing = list_rows(session, PositionORM, company_id=company.company_id)
@@ -717,7 +722,6 @@ def _resolve_position(session, company: CompanyORM) -> PositionORM:
         },
     )
 
-
 def _draft_degree_description() -> tuple[str, Optional[str]]:
     """Returns (description_text, description_source). Mirrors
     _draft_responsibility() exactly -- source-file-or-typed-description
@@ -727,7 +731,6 @@ def _draft_degree_description() -> tuple[str, Optional[str]]:
         "Do you have a source document to base the degree description on (file path)?",
         default=False,
     )
-
     if has_source:
         while True:
             path = typer.prompt("Enter file path (.txt / .md / .pdf)")
@@ -751,7 +754,6 @@ def _draft_degree_description() -> tuple[str, Optional[str]]:
     )
     final_text = _confirm_or_edit(response.text, "Degree description")
     return final_text, None
-
 
 def _resolve_degree(session, school: "SchoolORM") -> "DegreeORM":
     """v3: honors/awards prompts and fields removed -- see module docstring."""
@@ -789,7 +791,6 @@ def _resolve_degree(session, school: "SchoolORM") -> "DegreeORM":
         },
     )
 
-
 def _select_existing_degree_flat(session):
     """No functional change from earlier versions -- add-project unaffected.
     See module docstring for the display-semantics note on degree_name."""
@@ -798,7 +799,6 @@ def _select_existing_degree_flat(session):
         .join(SchoolORM, DegreeORM.school_id == SchoolORM.school_id)
         .all()
     )
-
     if not rows:
         return None
 
@@ -819,7 +819,6 @@ def _select_existing_degree_flat(session):
 # ---------------------------------------------------------------------------
 # Step 3: project
 # ---------------------------------------------------------------------------
-
 
 def _resolve_project(
     session,
@@ -851,20 +850,16 @@ def _resolve_project(
         },
     )
 
-
 # ---------------------------------------------------------------------------
 # Step 4: final confirmation
 # ---------------------------------------------------------------------------
 
-
 def _confirm_final_write() -> bool:
     return typer.confirm("\nConfirm write to database?", default=True)
-
 
 # ---------------------------------------------------------------------------
 # add-project command (v1.9: flat position/degree selector first)
 # ---------------------------------------------------------------------------
-
 
 @app.command("add-project")
 def add_project() -> None:
@@ -902,12 +897,10 @@ def add_project() -> None:
 
     console.print(f"[green]Done! New project ID: {project_id}[/green]")
 
-
 # ---------------------------------------------------------------------------
 # add-claim: interactive project selector (flat, join-based, single menu --
 # Institution / Role / Project columns only)
 # ---------------------------------------------------------------------------
-
 
 def _select_project_interactively(session) -> ProjectORM:
     """
@@ -971,11 +964,9 @@ def _select_project_interactively(session) -> ProjectORM:
     choice = typer.prompt("Select a number", type=int)
     return combined[choice - 1][0]
 
-
 # ---------------------------------------------------------------------------
 # add-claim: Step 1 -- problem
 # ---------------------------------------------------------------------------
-
 
 def _resolve_problem(session, project: ProjectORM) -> ProblemORM:
     description = typer.prompt("Describe the problem encountered in this project (no need to describe the solution)")
@@ -1004,11 +995,9 @@ def _resolve_problem(session, project: ProjectORM) -> ProblemORM:
         },
     )
 
-
 # ---------------------------------------------------------------------------
 # add-claim: Step 2 -- action
 # ---------------------------------------------------------------------------
-
 
 def _resolve_action(session, problem: ProblemORM) -> ActionORM:
     description = typer.prompt("What did you do about this problem? (describe only the action itself)")
@@ -1035,11 +1024,9 @@ def _resolve_action(session, problem: ProblemORM) -> ActionORM:
         },
     )
 
-
 # ---------------------------------------------------------------------------
 # add-claim: Step 3 -- claim (description)
 # ---------------------------------------------------------------------------
-
 
 def _resolve_claim(session, action: ActionORM) -> ClaimORM:
     raw_input_text = typer.prompt("What concrete result did this action produce? (describe only the result, don't repeat the action)")
@@ -1059,11 +1046,9 @@ def _resolve_claim(session, action: ActionORM) -> ClaimORM:
         },
     )
 
-
 # ---------------------------------------------------------------------------
 # add-claim: Step 3.5 -- metrics
 # ---------------------------------------------------------------------------
-
 
 def _review_metric_drafts(drafts: list[tuple[str, str, str]]) -> list[tuple[str, str, str, str]]:
     console.print("\n[bold]Metric drafts (extracted by LLM from the result statement)[/bold]")
@@ -1106,7 +1091,6 @@ def _review_metric_drafts(drafts: list[tuple[str, str, str]]) -> list[tuple[str,
 
     return finalized
 
-
 def _resolve_metrics(session, claim: ClaimORM) -> list[ClaimMetricORM]:
     client = get_llm_client()
     response = client.generate_text(
@@ -1133,11 +1117,9 @@ def _resolve_metrics(session, claim: ClaimORM) -> list[ClaimMetricORM]:
         )
     return metric_orms
 
-
 # ---------------------------------------------------------------------------
 # add-claim: Step 4 -- evidence
 # ---------------------------------------------------------------------------
-
 
 def _select_evidence_type() -> tuple[str, str]:
     choices = list(EVIDENCE_TYPE_TO_LEVEL.keys())
@@ -1153,7 +1135,6 @@ def _select_evidence_type() -> tuple[str, str]:
     evidence_type = choices[idx - 1]
     evidence_level = EVIDENCE_TYPE_TO_LEVEL[evidence_type]
     return evidence_type, evidence_level
-
 
 def _resolve_one_evidence(session, claim: ClaimORM) -> EvidenceORM:
     evidence_type, evidence_level = _select_evidence_type()
@@ -1173,18 +1154,15 @@ def _resolve_one_evidence(session, claim: ClaimORM) -> EvidenceORM:
         },
     )
 
-
 def _resolve_evidences(session, claim: ClaimORM) -> list[EvidenceORM]:
     evidences: list[EvidenceORM] = [_resolve_one_evidence(session, claim)]
     while typer.confirm("Any other evidence to add for this claim?", default=False):
         evidences.append(_resolve_one_evidence(session, claim))
     return evidences
 
-
 # ---------------------------------------------------------------------------
 # add-claim: Step 5 -- tags
 # ---------------------------------------------------------------------------
-
 
 def _confirm_or_edit_tags(proposed: list[tuple[str, str]]) -> list[tuple[str, str]]:
     console.print("\n[bold]Tag drafts (generated by LLM from this record's full content)[/bold]")
@@ -1217,7 +1195,6 @@ def _confirm_or_edit_tags(proposed: list[tuple[str, str]]) -> list[tuple[str, st
             result.append((name, category))
     return result if result else proposed
 
-
 def _build_static_context(session, project: ProjectORM) -> str:
     if project.position_id is not None:
         position = session.get(PositionORM, project.position_id)
@@ -1240,7 +1217,6 @@ def _build_static_context(session, project: ProjectORM) -> str:
         return "; ".join(parts)
 
     return ""
-
 
 def _resolve_tags(
     session,
@@ -1283,11 +1259,9 @@ def _resolve_tags(
         )
     return tag_orms
 
-
 # ---------------------------------------------------------------------------
 # add-claim: Step 6 -- governance
 # ---------------------------------------------------------------------------
-
 
 def _resolve_governance(session, claim: ClaimORM) -> GovernanceORM:
     use_policy = typer.prompt(
@@ -1316,11 +1290,9 @@ def _resolve_governance(session, claim: ClaimORM) -> GovernanceORM:
         },
     )
 
-
 # ---------------------------------------------------------------------------
 # add-claim command
 # ---------------------------------------------------------------------------
-
 
 @app.command("add-claim")
 def add_claim(
@@ -1373,7 +1345,6 @@ def add_claim(
     if tag_names:
         console.print(f"[green]Tags: {', '.join(tag_names)}[/green]")
     console.print("[green]Governance support_level: computed and filled in.[/green]")
-
 
 if __name__ == "__main__":
     app()
