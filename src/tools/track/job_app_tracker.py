@@ -114,7 +114,7 @@ def record_application(
     return application_id
 
 
-def update_stage(application_id: str, new_stage: str, notes: str) -> None:
+def update_stage(application_id: str, new_stage: str, notes: str | None = None) -> None:
     """Updates application.current_stage. Validates new_stage against the
     same fixed vocabulary enforced by the database CHECK constraint
     (core.db.APPLICATION_CURRENT_STAGE_OPTIONS) -- fails fast here with a
@@ -145,7 +145,7 @@ def update_stage(application_id: str, new_stage: str, notes: str) -> None:
         if new_stage == "Interviewing":
             application.interview_round = (application.interview_round or 0) + 1
         application.updated_at = datetime.now(timezone.utc)  
-        if notes:
+        if notes is not None:
             application.notes = notes
 
 
