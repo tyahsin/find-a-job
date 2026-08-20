@@ -5,24 +5,24 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 -- 個人資訊層
 CREATE TABLE identity (
-    identity_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name             TEXT NOT NULL,
-    location         TEXT NOT NULL,
-    visa_status      TEXT NOT NULL,  
-    email            TEXT NOT NULL,
-    phone            TEXT NOT NULL,
-    is_default       BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+    identity_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    location TEXT NOT NULL,
+    visa_status TEXT NOT NULL,
+    email TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE network (
-    network_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    network         TEXT NOT NULL,        -- 例如 "GitHub", "LinkedIn", "Behance"
-    username        TEXT NOT NULL,
-    target_position TEXT [],     -- 這個連結適用的工種，例如 "Software Engineer", "Designer"
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    network_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    network TEXT NOT NULL, -- 例如 "GitHub", "LinkedIn", "Behance"
+    username TEXT NOT NULL,
+    target_position TEXT [], -- 這個連結適用的工種，例如 "Software Engineer", "Designer"
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- 公司層
@@ -57,7 +57,7 @@ CREATE TABLE degree (
     school_id UUID REFERENCES school(school_id),
     degree_level TEXT, /* MA, MS, PhD, Short Program, etc. */
     degree_type TEXT, /* Major, Minor, Concentration, etc. */
-    degree_name TEXT, 
+    degree_name TEXT,
     degree_description TEXT, /* tyahsin: precompute：定版簡述，人工或LLM生成皆存在此欄位 */
     degree_description_source TEXT DEFAULT NULL, /* 原始資料連結/路徑；NULL代表無原文，簡述為LLM生成 */
     -- degree_honors TEXT [], /* tyahsin: cum laude, magna cum laude, summa cum laude, etc. */
@@ -76,8 +76,8 @@ CREATE TABLE project (
     end_date DATE NULL,
     project_context TEXT, /* tyahsin: the background of the project; why was it initiated amd why it's passed onto me */
     CHECK (
-    (position_id IS NOT NULL AND degree_id IS NULL) OR
-    (position_id IS NULL AND degree_id IS NOT NULL)
+        (position_id IS NOT NULL AND degree_id IS NULL) OR
+        (position_id IS NULL AND degree_id IS NOT NULL)
     )
 );
 
@@ -144,7 +144,7 @@ CREATE TABLE tag (
     tag_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tag_name TEXT UNIQUE NOT NULL, -- 標準寫法，唯一
     tag_category TEXT NOT NULL CHECK (
-    tag_category IN ('skill', 'domain', 'job_function')
+        tag_category IN ('skill', 'domain', 'job_function')
     ), -- 可轉移的能力, 產業領域知識, 職能類別
     aliases TEXT[] DEFAULT '{}', -- 同義詞/其他措辭，供 fuzzy match 比對用
     created_at TIMESTAMP DEFAULT now(),
@@ -172,12 +172,49 @@ CV generation 時再讓 LLM 針對特定 JD 做「措辭轉譯」而非從零生
 
 CREATE INDEX ON claim_chunks USING hnsw (embedding vector_cosine_ops);
 
--- 輸出追蹤層
-CREATE TABLE generated_outputs (
-    output_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    jd_reference TEXT,
-    used_claim_ids UUID[],
-    output_type TEXT,
-    generated_date TIMESTAMP DEFAULT now(),
-    human_review_status BOOLEAN /* tyahsin: how about just boolean to make sure it's either human reviewed or not? */
+-- ---------------------------------------------------------------------------
+-- apply/ 模組：職缺 + 投遞追蹤層（2026-08-19 新增）
+-- 原 generated_outputs 表已移除 -- 該表原本假設「每次 pipeline 生成都值得記
+-- 錄」，但實際使用行為是「生成可能不滿意、需人工改 yaml 重跑 rendercv，只
+-- 有真正投遞出去的那份才算數」，兩者是不同的集合。改為：pipeline 生成階段
+-- 完全不留痕跡（可重複跑不影響任何記錄），只有使用者確認要投遞時，才透過
+-- apply/ 模組寫入 application 表。
+-- ---------------------------------------------------------------------------
+
+-- 職缺層
+CREATE TABLE job (
+    job_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_name TEXT,
+    job_title TEXT,
+    job_location TEXT,
+    job_description TEXT, /* JD 全文 */
+    source_url TEXT,
+    date_posted DATE,
+    contact_name TEXT,
+    contact_email TEXT
+);
+
+-- 投遞追蹤層
+-- interview_round 由 apply/application_log.py 的 CLI 層邏輯自動遞增（非
+-- 資料庫 trigger，與本專案「業務邏輯留在 Python 層、方便人工審核與除錯」
+-- 的一致設計原則相同）-- current_stage 變成 'Interviewing' 時 +1。
+CREATE TABLE application (
+    application_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_id UUID REFERENCES job(job_id), /* company_name/job_title 皆透過此關聯取得，不再冗餘存 */
+    file_path TEXT, /* 最終使用的 CV 版本存放路徑（可能是人工改過的 yaml/PDF） */
+    current_stage TEXT NOT NULL DEFAULT 'Applied' CHECK (
+        current_stage IN (
+            'Applied',
+            'Screening',
+            'Interviewing',
+            'Offer',
+            'Rejected',
+            'Withdrawn',
+            'Ghosted'
+        )
+    ),
+    interview_round INTEGER NOT NULL DEFAULT 0, /* 目前面試進度，CLI 層自動遞增 */
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT now(),
+    updated_at TIMESTAMP DEFAULT now()
 );
