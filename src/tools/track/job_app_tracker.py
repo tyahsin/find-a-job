@@ -172,7 +172,7 @@ def list_applications(current_stage: str | None = None) -> list[dict]:
                     "job_title": job.job_title,
                     "current_stage": application.current_stage,
                     "interview_round": application.interview_round,
-                    "file_path": application.file_path,
+                    "file_folder": application.file_folder,
                     "notes": application.notes,
                     "created_at": application.created_at,
                     "updated_at": application.updated_at,

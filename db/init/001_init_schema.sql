@@ -201,7 +201,7 @@ CREATE TABLE job (
 CREATE TABLE application (
     application_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     job_id UUID REFERENCES job(job_id), /* company_name/job_title 皆透過此關聯取得，不再冗餘存 */
-    file_path TEXT, /* 最終使用的 CV 版本存放路徑（可能是人工改過的 yaml/PDF） */
+    file_folder TEXT, /* 最終使用的 CV 版本存放路徑（可能是人工改過的 yaml/PDF） */
     current_stage TEXT NOT NULL DEFAULT 'Applied' CHECK (
         current_stage IN (
             'Applied',

@@ -425,7 +425,6 @@ APPLICATION_CURRENT_STAGE_OPTIONS = (
     "Interviewing",
     "Offer",
     "Rejected",
-    "Withdrawn",
     "Ghosted",
 )
 
@@ -433,14 +432,14 @@ class ApplicationORM(Base):
     __tablename__ = "application"
     __table_args__ = (
         CheckConstraint(
-            "current_stage IN ('Applied', 'Screening', 'Interviewing', 'Offer', 'Rejected', 'Ghosted')",
+            f"current_stage IN ({APPLICATION_CURRENT_STAGE_OPTIONS})",
             name="application_current_stage_valid",
         ),
     )
 
     application_id = _uuid_pk()
     job_id = Column(PGUUID(as_uuid=True), ForeignKey("job.job_id"))  # company_name/job_title read through this FK
-    file_path = Column(Text, nullable=True)  # path to the CV version actually used for this application
+    file_folder = Column(Text, nullable=True)  # path to the CV version actually used for this application
     current_stage = Column(Text, nullable=False, default="Applied")
     interview_round = Column(Integer, nullable=False, default=0)  # incremented by CLI logic, not a DB trigger
     notes = Column(Text, nullable=True)
