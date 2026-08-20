@@ -1,5 +1,5 @@
 """
-apply/application_logger.py
+track/job_app_tracker.py
 Version: v1 (2026-08-19)
 
 Replaces gencv/application_logger.py (which wrote to the now-removed
@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import uuid
 
+from datetime import datetime, timezone
+
 from core.db import (
     APPLICATION_CURRENT_STAGE_OPTIONS,
     ApplicationORM,
@@ -56,29 +58,38 @@ def find_or_create_job(
     _resolve_company()/_resolve_school() for the equivalent pattern with
     fuzzy matching layered on top at the CLI level, if ever needed here).
     """
-    with get_session() as session:
-        job = select_or_create(
-            session,
-            JobORM,
-            match_filters={"company_name": company_name, "job_title": job_title},
-            create_values={
-                "company_name": company_name,
-                "job_title": job_title,
-                "job_location": job_location,
-                "job_description": job_description,
-                "source_url": source_url,
-                "date_posted": date_posted,
-                "contact_name": contact_name,
-                "contact_email": contact_email,
-            },
-        )
-        job_id = str(job.job_id)
-    return job_id
+    if job_description is None: # find
+        with get_session() as session:
+            job = select_or_create(
+                session,
+                JobORM,
+                match_filters={"company_name": company_name, "job_title": job_title},
+            )
+    else: # create
+        with get_session() as session:
+            job = select_or_create(
+                session,
+                JobORM,
+                match_filters={"company_name": company_name, "job_title": job_title},
+                create_values={
+                    "company_name": company_name,
+                    "job_title": job_title,
+                    "job_location": job_location,
+                    "job_description": job_description,
+                    "source_url": source_url,
+                    "date_posted": date_posted,
+                    "contact_name": contact_name,
+                    "contact_email": contact_email,
+                },
+            )
+    if job is not None:
+        return str(job.job_id)
+    return None
 
 
 def record_application(
     job_id: str,
-    file_path: str | None = None,
+    file_folder: str | None = None,
     notes: str | None = None,
 ) -> str:
     """Records an actual application -- called ONLY when the user has
@@ -92,7 +103,7 @@ def record_application(
     with get_session() as session:
         application = ApplicationORM(
             job_id=uuid.UUID(job_id) if isinstance(job_id, str) else job_id,
-            file_path=file_path,
+            file_path=file_folder,
             current_stage="Applied",
             interview_round=0,
             notes=notes,
@@ -103,7 +114,7 @@ def record_application(
     return application_id
 
 
-def update_stage(application_id: str, new_stage: str) -> None:
+def update_stage(application_id: str, new_stage: str, notes: str) -> None:
     """Updates application.current_stage. Validates new_stage against the
     same fixed vocabulary enforced by the database CHECK constraint
     (core.db.APPLICATION_CURRENT_STAGE_OPTIONS) -- fails fast here with a
@@ -133,6 +144,9 @@ def update_stage(application_id: str, new_stage: str) -> None:
         application.current_stage = new_stage
         if new_stage == "Interviewing":
             application.interview_round = (application.interview_round or 0) + 1
+        application.updated_at = datetime.now(timezone.utc)  
+        if notes:
+            application.notes = notes
 
 
 def list_applications(current_stage: str | None = None) -> list[dict]:

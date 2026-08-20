@@ -350,14 +350,14 @@ def _confirm_networks(
 
     choice = input(
         "\nAccept the suggested networks? (Enter to accept / type comma-separated indices to override, "
-        "or 'none' for no networks): "
+        "or 'skip' for no networks): "
     ).strip()
 
     if not choice:
         print(f"  -> Using {len(suggested_networks)} suggested network(s).")
         return suggested_networks
 
-    if choice.lower() == "none":
+    if choice.lower() == "skip":
         print("  -> Using no networks.")
         return []
 
@@ -401,64 +401,3 @@ def select_networks_from_jd(job_description: str) -> list[NetworkORM]:
 
     return _confirm_networks(matched_position, networks)
 
-
-# ---------------------------------------------------------------------------
-# Headline extraction (job title, verbatim from the JD)
-# ---------------------------------------------------------------------------
-# Deliberately EXTRACTION, not generation -- the LLM may only pull out a job
-# title that is explicitly written in the job description text, never
-# invent, rephrase into a "nicer" synonym, or infer a title from the
-# candidate's own experience. This mirrors the "no overclaiming" governance
-# principle already applied throughout onboard/prompts.py's
-# _BASE_SYSTEM_RULES (rule 1: never add a fact not already present in the
-# source material) -- here applied specifically to the headline field.
-
-# No mandatory human confirmation gate here, unlike select_identity_from_jd()
-# / select_networks_from_jd() -- those two carry real risk if picked wrong
-# (wrong contact info / wrong visa disclosure sent out), whereas extracting
-# a title string that's already written verbatim in the JD is closer to
-# mechanical text extraction with much lower stakes. If this turns out to
-# need a confirmation step in practice, it can be added the same way as the
-# other two selectors.
-
-HEADLINE_SYSTEM_PROMPT = """You will be given a job description. Your task is to extract the job
-title/position name, if and only if it is explicitly written in the text.
-
-Strict rules (must follow):
-1. Only extract a title that literally appears in the job description --
-do not paraphrase it into a different wording, do not "clean it up" into
-a more standard-sounding title, and do not translate it.
-2. Do not infer or guess a title from the responsibilities/requirements
-described if no explicit title is stated anywhere in the text.
-3. If multiple title-like phrases appear (e.g. both a posting title and an
-internal team name), pick the one that most clearly reads as the actual
-job title (typically the one near the top of the posting).
-
-Output format: output ONLY the extracted title text, exactly as written in
-the source, no other text, no explanation, no quotation marks. If no
-explicit job title is present anywhere in the text, output NONE instead."""
-
-HEADLINE_USER_PROMPT_TEMPLATE = """# Job Description
-{job_description}
-
-Extract the job title (output NONE if none is explicitly stated):"""
-
-
-def extract_headline_from_jd(job_description: str) -> str | None:
-    """Extracts the job title verbatim from the job description, if one is
-    explicitly present. Returns None if no explicit title is found -- the
-    caller (pipeline.py) should treat None as "omit the headline field"
-    rather than falling back to a guess or a hardcoded default."""
-    user_prompt = HEADLINE_USER_PROMPT_TEMPLATE.format(job_description=job_description)
-
-    response = get_llm_client().generate_text(
-        system_prompt=HEADLINE_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        temperature=0.0,
-        max_tokens=50,
-    )
-
-    raw = response.text.strip()
-    if not raw or raw.upper() == "NONE":
-        return None
-    return raw

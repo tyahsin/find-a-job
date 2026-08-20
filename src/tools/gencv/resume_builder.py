@@ -59,8 +59,6 @@ from gencv.experience_matcher import fetch_experience_contexts, to_uuid_list
 from gencv.skill_grouper import group_skills_for_jd
 
 TEMPLATES_DIR = pathlib.Path(__file__).parent / "templates"
-print(f"[INFO] Using templates from {TEMPLATES_DIR.resolve()}")
-
 
 def build_experience_entries(session, claim_ids, description_overrides=None):
     """依 claim_id 清單取得完整背景，篩出 WORK TRACK（is_work_track=True）子集，
@@ -363,6 +361,7 @@ def render_pdf(
 
     會自動建立 pdf_path 所在資料夾（若不存在）。
     """
+    print(f"[INFO] Using templates from {TEMPLATES_DIR.resolve()}")
     design_path = design_path or TEMPLATES_DIR / "design.yaml"
     locale_path = locale_path or TEMPLATES_DIR / "locale.yaml"
     settings_path = settings_path or TEMPLATES_DIR / "settings.yaml"
@@ -399,4 +398,4 @@ def render_pdf(
     if result.stdout:
         print(result.stdout)
 
-    return str(pdf_path)
+    return pdf_path

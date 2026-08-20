@@ -1,5 +1,5 @@
 """
-cli.py
+gencv/cli.py
 Version: v3 (2026-08-19)
 
 Changelog:
@@ -36,28 +36,15 @@ import pathlib
 
 import typer
 
-from gencv.pipeline import generate_cv
+from gencv.pipeline import generate_cv as gen_cv
 
-app = typer.Typer()
+app = typer.Typer(help="""gencv: JD -> tailored CV PDF pipeline.""")
 
-@app.callback()
-def callback():
-    """gencv: JD -> tailored CV PDF pipeline."""
-    pass
 
-@app.command("generate")
-def generate(
-    job_description_file: str = typer.Option(
-        None, "--job-description-file", help="Path to a JD text file"
-    ),
-    company_name: str = typer.Option(
-        None, "--company-name", help="Target company name (required -- used to build the PDF output path)"
-    ),
-    job_title: str = typer.Option(
-        None, "--job-title", help="Target job title (required -- used to build the PDF output path)"
-    ),
-    job_description: str = typer.Option(
-        None, "--job-description", help="Paste JD text directly"
+@app.command("generate-cv")
+def generate_cv(
+    job_id: str = typer.Option(
+        ..., "--job-id", help="Job ID (required -- used to build the PDF output path)"
     ),
     name: str = typer.Option(
         None,
@@ -69,24 +56,16 @@ def generate(
         "--headline",
         help="Resume headline, e.g. target job title (optional -- extracted from the JD text if omitted)",
     ),
-):
+) -> str:
     """Select relevant experiences -> confirm rewrites -> render to PDF -> log the application."""
-    jd_text = job_description
-    if job_description_file:
-        jd_text = pathlib.Path(job_description_file).read_text(encoding="utf-8")
 
-    if not jd_text:
-        typer.secho("Must provide either --job-description or --job-description-file", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
-
-    result_path = generate_cv(
-        job_description=jd_text,
-        company_name=company_name,
-        job_title=job_title,
+    pdf_path = gen_cv(
+        job_id=job_id,
         headline=headline,
         name=name,
     )
-    typer.secho(f"CV generated: {result_path}", fg=typer.colors.GREEN)
+    typer.secho(f"CV generated: {str(pdf_path)}", fg=typer.colors.GREEN)
+    return pdf_path.parent
 
 
 if __name__ == "__main__":

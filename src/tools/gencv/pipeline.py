@@ -67,7 +67,6 @@ import tempfile
 from gencv.identity_selector import (
     select_identity_from_jd,
     select_networks_from_jd,
-    extract_headline_from_jd,
 )
 from gencv.education_selector import select_relevant_degrees
 from gencv.experience_matcher import select_claims
@@ -81,13 +80,13 @@ from gencv.resume_builder import (
     fetch_domain_job_function_tags,
     render_pdf,
 )
-from core.db import get_session
-
+from core.db import (
+    get_session,
+    JobORM,
+)
 
 def generate_cv(
-    job_description: str,
-    company_name: str,
-    job_title: str,
+    job_id: str,
     headline: str | None = None,
     name: str | None = None,
 ) -> tuple[pathlib.Path, str]:
@@ -100,12 +99,18 @@ def generate_cv(
     Returns:
         (PDF 路徑, 該次投遞紀錄的 output_id)
     """
+    with get_session() as session:
+        job = session.get(JobORM, job_id)
+        if not job:
+            raise ValueError(f"Job with ID {job_id} not found.")
+        job_description = job.job_description
+        company_name = job.company_name
+        job_title = job.job_title
+
     identity = select_identity_from_jd(job_description)
     networks = select_networks_from_jd(job_description)
 
-    if headline is None:
-        headline = extract_headline_from_jd(job_description)
-
+    resolved_headline = job_title if headline is None else headline
     resolved_name = name if name is not None else identity.name
 
     selected_claim_ids = select_claims(job_description)
@@ -140,7 +145,7 @@ def generate_cv(
             identity,
             str(cv_yaml_path),
             job_description=job_description,
-            headline=headline,
+            headline=resolved_headline,
             networks=networks,
             relevant_degrees=relevant_degrees,
             description_overrides=final_descriptions,

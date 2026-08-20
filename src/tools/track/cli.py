@@ -1,18 +1,18 @@
 """
-apply/cli.py
+track/cli.py
 Version: v4 (2026-08-20)
 
-CLI entry point for the apply/ module -- wraps application_logger.py's
+CLI entry point for the track/ module -- wraps application_logger.py's
 four functions (find_or_create_job/record_application/update_stage/
 list_applications) as Typer commands. Uses a plain empty callback()
 (Typer's standard group pattern, not invoke_without_command).
 
 Command naming (user-confirmed 2026-08-20):
-    apply create -> find_or_create_job(), with optional LLM-assisted
+    track add-job -> find_or_create_job(), with optional LLM-assisted
                     JD extraction path via --jd-file
-    apply record -> record_application()
-    apply update -> update_stage()
-    apply list   -> list_applications()
+    track add_application -> record_application()
+    track update_application -> update_stage()
+    track list-application   -> list_applications()
 
 (v2 change, 2026-08-20): the standalone `apply extract` command was
 REMOVED -- absorbed into `apply create` via an LLM extraction +
@@ -62,37 +62,40 @@ from typing import Optional
 
 import typer
 
-from apply.application_logger import (
+from track.job_app_tracker import (
     find_or_create_job,
-    list_applications,
+    list_applications as list_apps,
     record_application,
     update_stage,
 )
-from apply.job_extractor import JOB_FIELDS, extract_job_fields
-from core.confirmation import confirm_fields_once
+from track.job_extractor import JOB_FIELDS, extract_job_fields
+from core.file_reader import read_source_file
+from core.llm_reviewer import confirm_fields_once
 
-app = typer.Typer(help="Job collection, application tracking, and notifications.")
-
-
-@app.callback()
-def callback() -> None:
-    """apply/ module: job collection, application logging, and interview stage tracking."""
+app = typer.Typer(help="Collect jobs and track applications.")
 
 
-def _read_jd_file(jd_file: str) -> str:
-    """Reads JD text from a file path (UTF-8). Exits cleanly with an
-    error message if the file does not exist, rather than letting a
-    raw FileNotFoundError traceback surface to the user.
+@app.command("find")
+def find_job(
+    company_name: str = typer.Option(..., "--company-name", help="Company name"),
+    job_title: str = typer.Option(..., "--job-title", help="Job title"),
+) -> str: 
     """
-    file_path = Path(jd_file).expanduser()
-    if not file_path.is_file():
-        typer.echo(f"Error: file not found: {file_path}", err=True)
-        raise typer.Exit(code=1)
-    return file_path.read_text(encoding="utf-8")
+    Finds an existing job row by exact (company_name, job_title) match. Returns the job_id (str).
+    """
+    job_id = find_or_create_job(
+        company_name=company_name,
+        job_title=job_title,
+    )
+
+    if job_id is None:
+        typer.echo(f"job_id not found for your entry")
+    else:
+        typer.echo(f"job_id: {job_id}")
 
 
-@app.command("create")
-def create_job(
+@app.command("add-job")
+def add_job(
     company_name: Optional[str] = typer.Option(None, "--company", help="Company name"),
     job_title: Optional[str] = typer.Option(None, "--title", help="Job title"),
     job_location: Optional[str] = typer.Option(None, "--location", help="Job location"),
@@ -104,7 +107,7 @@ def create_job(
     jd_file: Optional[str] = typer.Option(
         None, "--jd-file", help="Path to a JD text file (triggers LLM extraction + one-shot confirmation)"
     ),
-) -> None:
+) -> str:
     """Finds or creates a job row (find_or_create_job()). Matches
     exactly on (company_name, job_title).
 
@@ -116,7 +119,7 @@ def create_job(
       (there is no other source for them without LLM extraction).
     """
     if jd_file:
-        jd_text = _read_jd_file(jd_file)
+        jd_text = read_source_file(jd_file)
         extracted = extract_job_fields(jd_text=jd_text, source_url=source_url)
         confirmed = confirm_fields_once(
             fields=extracted,
@@ -138,7 +141,7 @@ def create_job(
             contact_email=confirmed["contact_email"],
         )
         typer.echo(f"job_id: {job_id}")
-        return
+        return job_id
 
     missing = [
         name
@@ -170,39 +173,41 @@ def create_job(
         contact_email=contact_email,
     )
     typer.echo(f"job_id: {job_id}")
+    return job_id
 
 
-@app.command("record")
-def record(
-    job_id: str = typer.Option(..., "--job-id", help="The job_id to record an application for (see apply create)"),
-    file_path: Optional[str] = typer.Option(None, "--file-path", help="Path to the final submitted CV yaml/PDF"),
+@app.command("add-application")
+def add_application(
+    job_id: str = typer.Option(..., "--job-id", help="The job_id to record an application for"),
+    file_folder: Optional[str] = typer.Option(None, "--file-folder", help="Path to the final submitted CV yaml/PDF folder"),
     notes: Optional[str] = typer.Option(None, "--notes", help="Notes"),
 ) -> None:
     """Records an actual application (record_application()). current_stage defaults to Applied."""
-    application_id = record_application(job_id=job_id, file_path=file_path, notes=notes)
+    application_id = record_application(job_id=job_id, file_folder=file_folder, notes=notes)
     typer.echo(f"application_id: {application_id}")
 
 
-@app.command("update")
-def update(
+@app.command("update-application")
+def update_application(
     application_id: str = typer.Option(..., "--application-id", help="The application_id to update"),
     new_stage: str = typer.Option(..., "--stage", help="New stage (see APPLICATION_CURRENT_STAGE_OPTIONS)"),
+    notes: Optional[str] = typer.Option(None, "--notes", help="Notes"),
 ) -> None:
     """Updates application.current_stage (update_stage()). Transitioning to Interviewing auto-increments interview_round."""
     try:
-        update_stage(application_id=application_id, new_stage=new_stage)
+        update_stage(application_id=application_id, new_stage=new_stage, notes=notes)
     except ValueError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1)
     typer.echo(f"application {application_id} -> {new_stage}")
 
 
-@app.command("list")
-def list_apps(
+@app.command("list-applications")
+def list_applications(
     stage: Optional[str] = typer.Option(None, "--stage", help="Filter to applications in this stage only"),
 ) -> None:
     """Lists application records (list_applications()), optionally filtered by --stage."""
-    rows = list_applications(current_stage=stage)
+    rows = list_apps(current_stage=stage)
     if not rows:
         typer.echo("No matching application records.")
         return
@@ -213,8 +218,13 @@ def list_apps(
         round_val = row["interview_round"]
         app_id_val = row["application_id"]
         line = "[" + stage_val + "] " + company_val + " - " + title_val
-        line += " (round " + str(round_val) + ", application_id=" + app_id_val + ")"
-        typer.echo(line)
+        line += " (round " + str(round_val) + ", application_id=" + app_id_val + ")" 
+        if stage_val in ["Offer"]:
+            typer.secho(line, fg=typer.colors.GREEN)
+        elif stage_val in ["Rejected", "Ghosted"]:
+            typer.secho(line, fg=typer.colors.RED)
+        else:
+            typer.secho(line, fg=typer.colors.YELLOW)
 
 
 if __name__ == "__main__":

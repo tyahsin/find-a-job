@@ -433,8 +433,7 @@ class ApplicationORM(Base):
     __tablename__ = "application"
     __table_args__ = (
         CheckConstraint(
-            "current_stage IN ('Applied', 'Screening', 'Interviewing', 'Offer', "
-            "'Rejected', 'Withdrawn', 'Ghosted')",
+            "current_stage IN ('Applied', 'Screening', 'Interviewing', 'Offer', 'Rejected', 'Ghosted')",
             name="application_current_stage_valid",
         ),
     )
@@ -473,11 +472,13 @@ def select_or_create(
     if existing is not None:
         return existing
 
-    values = create_values if create_values is not None else match_filters
-    new_obj = model(**values)
-    session.add(new_obj)
-    session.flush()
-    return new_obj
+    if create_values is not None:
+        new_obj = model(**create_values)
+        session.add(new_obj)
+        session.flush()
+        return new_obj
+
+    return None
 
 def list_rows(session: Session, model: Type[ModelT], **filters) -> Sequence[ModelT]:
     """Generic query helper -- used e.g. to list existing positions under a company."""

@@ -138,32 +138,9 @@ from core.db import (
 )
 from core.file_reader import FileReadError, UnsupportedFileTypeError, read_source_file
 from core.llm_client import get_llm_client
-from onboard.prompts import *  # (
-#   ACTION_SYSTEM_PROMPT,
-#   EVIDENCE_TYPE_TO_LEVEL,
-#   METRIC_CONFIDENCE_OPTIONS,
-#   METRIC_EXTRACTION_SYSTEM_PROMPT,
-#   METRIC_TYPE_OPTIONS,
-#   PROBLEM_SYSTEM_PROMPT,
-#   PROJECT_CONTEXT_SYSTEM_PROMPT,
-#   RESPONSIBILITY_SYSTEM_PROMPT,
-#   RESULT_CLAIM_SYSTEM_PROMPT,
-#   ROLE_SCOPE_OPTIONS,
-#   TAG_SYSTEM_PROMPT,
-#   VALUE_TYPE_OPTIONS,
-#   build_action_prompt,
-#   build_metric_extraction_prompt,
-#   build_problem_prompt,
-#   build_project_context_prompt,
-#   build_responsibility_prompt_from_description,
-#   build_responsibility_prompt_from_source,
-#   build_result_claim_prompt,
-#   build_tag_prompt,
-#   parse_metric_response,
-#   parse_tag_response,
-# )
+from onboard.prompts import *
 
-app = typer.Typer()
+app = typer.Typer(help="Add experience entries to database.")
 console = Console()
 
 # ---------------------------------------------------------------------------

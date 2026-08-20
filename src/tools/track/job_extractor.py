@@ -1,13 +1,13 @@
 """
-apply/job_extractor.py
+track/job_extractor.py
 Version: v3 (2026-08-20)
 
 Extracts the 8 job fields (matching core/db.py's JobORM / the `job`
 table in 001_init_schema.sql) from a raw JD text blob, via a single
 batch LLM call. Output is meant to be reviewed by the user before being
-passed into apply/application_logger.py's find_or_create_job() -- this
+passed into track/job_app_tracker.py's find_or_create_job() -- this
 module does NOT write to the database itself; it only produces a dict
-of candidate field values. (Consumed by apply/cli.py's `apply create
+of candidate field values. (Consumed by track/cli.py's `apply create
 --jd-text`/`--jd-file` path -- the standalone `apply extract` command
 was removed in cli.py v2.)
 
@@ -47,7 +47,7 @@ Design principles carried over from the rest of this codebase:
 - Low temperature (0.0) for this call: field extraction should be as
   literal/deterministic as possible.
 - No confirmation gate is implemented inside this module itself -- the
-  human-confirmation step happens one layer up, in apply/cli.py's
+  human-confirmation step happens one layer up, in track/cli.py's
   `apply create --jd-text`/`--jd-file` path.
 """
 
