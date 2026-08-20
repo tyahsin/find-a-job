@@ -1,8 +1,33 @@
 """
 core/db.py
-Version: v1.3 (2026-08-10)
+Version: v1.4 (2026-08-19)
 
 Changelog:
+- v1.4 (2026-08-19): Removed GeneratedOutputORM (generated_outputs table).
+  Rationale (per user decision, 2026-08-19): that table assumed "every
+  pipeline generation is worth recording", but actual usage is "a
+  generation may be unsatisfactory, get hand-edited as a yaml, and
+  re-rendered -- only the version actually submitted matters". Replaced
+  with JobORM (job) and ApplicationORM (application), corresponding to
+  003_apply_tracking additions in 001_init_schema.sql:
+  - JobORM: one row per job posting (company_name/job_title/job_location/
+    job_description/source_url/date_posted/contact_name/contact_email).
+    No governance concept -- every row is a candidate, matching the same
+    pattern as CompanyORM/SchoolORM above.
+  - ApplicationORM: one row per submitted application, referencing job_id
+    (company_name/job_title read through this FK, not duplicated).
+    file_path stores the path to whichever CV version was actually used
+    (which may be hand-edited after generate_cv() produced a first
+    draft -- pipeline.py itself no longer writes anything here
+    automatically; only a deliberate "record this application" action
+    does). current_stage is a fixed CHECK vocabulary (mirrors the
+    existing role_scope/metric_type pattern in this codebase).
+    interview_round is a plain INTEGER counter, incremented by CLI-layer
+    logic (apply/application_log.py) when current_stage transitions to
+    'Interviewing' -- NOT a database trigger, consistent with this
+    project's "business logic stays in Python, not hidden in the
+    database" principle (see fill_pending_support_levels() below for
+    the same philosophy applied to governance).
 - v1.3 (2026-08-10): Removed the global Session-level after_commit event
   listener introduced in v1.2. That mechanism fired on EVERY session
   commit across the whole app (add-project, add-company, add-position,
@@ -25,17 +50,14 @@ Changelog:
   aggregator for governance.support_level, combining evidence_level
   (multiple rows, OR logic -- take the STRONGEST) and metric_confidence
   (multiple rows, AND logic -- take the WEAKEST), then taking the WEAKER
-  of those two combined results. Also corrected this module's docstring:
-  it previously said "governance_metadata is intentionally NOT modeled
-  here yet", but GovernanceORM (along with ClaimChunkORM and
-  GeneratedOutputORM) was already added in a prior session.
+  of those two combined results.
 - v1.0 (2026-08-04, inferred): Initial engine/session setup + ORM models.
 
 SQLAlchemy engine/session setup + ORM models for the Source of Truth schema:
 company, position, school, degree, project (Step 0-4 of add-project),
 plus problem, action, claim (result_claim), claim_metric, evidence, tag,
-claim_tag, governance, claim_chunks, generated_outputs (Step 0-6 of
-add-claim, plus downstream generation/tracking layers).
+claim_tag, governance, claim_chunks (Step 0-6 of add-claim), plus job and
+application (apply/ module, Step 5 -- see v1.4 changelog above).
 
 Also provides a generic `select_or_create()` helper used by the onboard
 CLI flow to either reuse an existing row or create a new one, typed insert
@@ -79,6 +101,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Text,
     create_engine,
     text,
@@ -102,7 +125,6 @@ SessionLocal = sessionmaker(
     future=True,
     expire_on_commit=False,  # avoid DetachedInstanceError on post-commit attribute reads
 )
-
 
 @contextmanager
 def get_session() -> Iterator[Session]:
@@ -130,14 +152,12 @@ def get_session() -> Iterator[Session]:
     finally:
         session.close()
 
-
 # ---------------------------------------------------------------------------
 # ORM Base
 # ---------------------------------------------------------------------------
 
 class Base(DeclarativeBase):
     pass
-
 
 def _uuid_pk() -> Column:
     return Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -161,17 +181,16 @@ class IdentityORM(Base):
     name = Column(Text, nullable=False)
     email = Column(Text, nullable=False)
     phone = Column(Text, nullable=True)
-    location = Column(Text, nullable=True)         # current residence, e.g. "Tokyo, Japan"
-    visa_status = Column(Text, nullable=True)       # e.g. "Requires sponsorship"
+    location = Column(Text, nullable=True)  # current residence, e.g. "Tokyo, Japan"
+    visa_status = Column(Text, nullable=True)  # e.g. "Requires sponsorship"
     is_default = Column(Boolean, nullable=False, default=False)
-
 
 class NetworkORM(Base):
     __tablename__ = "network"
 
     network_id = _uuid_pk()
-    network = Column(Text, nullable=False)          # e.g. "GitHub", "LinkedIn", "Behance"
-    username = Column(Text, nullable=False)          # account handle, e.g. "yahsintsai"
+    network = Column(Text, nullable=False)  # e.g. "GitHub", "LinkedIn", "Behance"
+    username = Column(Text, nullable=False)  # account handle, e.g. "yahsintsai"
     target_position = Column(ARRAY(Text), nullable=False)  # e.g. ["Software Engineer", "Data Scientist"]
 
 # ---------------------------------------------------------------------------
@@ -185,14 +204,12 @@ class CompanyORM(Base):
     company_name = Column(Text)
     location = Column(Text)
 
-
 class SchoolORM(Base):
     __tablename__ = "school"
 
     school_id = _uuid_pk()
     school_name = Column(Text)
     location = Column(Text)
-
 
 # ---------------------------------------------------------------------------
 # Position layer (work track)
@@ -210,7 +227,6 @@ class PositionORM(Base):
     start_date = Column(Date)
     end_date = Column(Date, nullable=True)
 
-
 # ---------------------------------------------------------------------------
 # Degree layer (education track)
 # ---------------------------------------------------------------------------
@@ -220,14 +236,13 @@ class DegreeORM(Base):
 
     degree_id = _uuid_pk()
     school_id = Column(PGUUID(as_uuid=True), ForeignKey("school.school_id"))
-    degree_level = Column(Text)          # e.g. MA, MS, PhD, Short Program, etc.
-    degree_type = Column(Text)           # e.g. Major, Minor, Concentration, etc.
-    degree_name = Column(Text)           # the subject/area itself, e.g. "Computer Science"
+    degree_level = Column(Text)  # e.g. MA, MS, PhD, Short Program, etc.
+    degree_type = Column(Text)  # e.g. Major, Minor, Concentration, etc.
+    degree_name = Column(Text)  # the subject/area itself, e.g. "Computer Science"
     degree_description = Column(Text, nullable=True)
     degree_description_source = Column(Text, nullable=True)  # NULL => LLM-generated, no source doc
     start_date = Column(Date)
     end_date = Column(Date, nullable=True)
-
 
 # ---------------------------------------------------------------------------
 # Project layer (shared, position_id XOR degree_id)
@@ -251,7 +266,6 @@ class ProjectORM(Base):
     end_date = Column(Date, nullable=True)
     project_context = Column(Text)
 
-
 # ---------------------------------------------------------------------------
 # Problem layer -- belongs to a project
 # ---------------------------------------------------------------------------
@@ -265,7 +279,6 @@ class ProblemORM(Base):
     stakeholder_impact = Column(Text, nullable=True)
     baseline_metric = Column(Text, nullable=True)
 
-
 # ---------------------------------------------------------------------------
 # Action layer -- belongs to a problem
 # ---------------------------------------------------------------------------
@@ -278,7 +291,6 @@ class ActionORM(Base):
     description = Column(Text)
     role_scope = Column(Text, nullable=True)  # e.g. Led / Collaborated / Supported
 
-
 # ---------------------------------------------------------------------------
 # Claim layer -- belongs to an action
 # ---------------------------------------------------------------------------
@@ -289,12 +301,6 @@ class ClaimORM(Base):
     claim_id = _uuid_pk()
     action_id = Column(PGUUID(as_uuid=True), ForeignKey("action.action_id"))
     description = Column(Text)  # core CV bullet content (formerly result_statement)
-    # NOTE (Aug 2026): value_type / metric / metric_confidence moved OUT of this
-    # table into claim_metric (one-to-many). A single claim was found in
-    # practice to often carry more than one quantifiable metric, and not
-    # every metric cleanly fits the fixed value_type categories -- see
-    # ClaimMetricORM below.
-
 
 class ClaimMetricORM(Base):
     """
@@ -317,7 +323,6 @@ class ClaimMetricORM(Base):
     metric_value = Column(Text)  # original number/description, e.g. "reduced from 5 days to 2 days"
     metric_confidence = Column(Text)  # Precise / Estimated / Rough impression -- always human-selected
 
-
 # ---------------------------------------------------------------------------
 # Evidence layer -- belongs to a claim
 # ---------------------------------------------------------------------------
@@ -331,7 +336,6 @@ class EvidenceORM(Base):
     evidence_location = Column(Text, nullable=True)
     evidence_level = Column(Text)  # L1 (strongest) -> L4 (weakest), auto-derived from evidence_type
 
-
 # ---------------------------------------------------------------------------
 # Tag layer -- LLM-generated, human-confirmed; many-to-many with claim
 # ---------------------------------------------------------------------------
@@ -343,13 +347,11 @@ class TagORM(Base):
     tag_name = Column(Text, unique=True, nullable=False)
     tag_category = Column(Text, nullable=False)  # skill | domain | job_function
 
-
 class ClaimTagORM(Base):
     __tablename__ = "claim_tag"
 
     claim_id = Column(PGUUID(as_uuid=True), ForeignKey("claim.claim_id"), primary_key=True)
     tag_id = Column(PGUUID(as_uuid=True), ForeignKey("tag.tag_id"), primary_key=True)
-
 
 # ---------------------------------------------------------------------------
 # Governance layer -- belongs to a claim
@@ -365,7 +367,6 @@ class GovernanceORM(Base):
     notes_for_llm = Column(Text, nullable=True)  # operating instructions for the generation model
     allowed_for_generation = Column(Boolean, default=True)  # hard governance switch
 
-
 # ---------------------------------------------------------------------------
 # Claim chunks layer (pgvector) -- belongs to a claim
 # ---------------------------------------------------------------------------
@@ -380,7 +381,6 @@ try:
 except ImportError:
     _EMBEDDING_COLUMN = Column(Text)  # fallback, pgvector-sqlalchemy not yet installed
 
-
 class ClaimChunkORM(Base):
     __tablename__ = "claim_chunks"
 
@@ -390,28 +390,69 @@ class ClaimChunkORM(Base):
     content = Column(Text)
     embedding = _EMBEDDING_COLUMN
 
+# ---------------------------------------------------------------------------
+# Job layer -- apply/ module (2026-08-19, replaces generated_outputs -- see
+# v1.4 changelog above). No governance concept -- every row is a candidate,
+# same pattern as CompanyORM/SchoolORM.
+# ---------------------------------------------------------------------------
+
+class JobORM(Base):
+    __tablename__ = "job"
+
+    job_id = _uuid_pk()
+    company_name = Column(Text)
+    job_title = Column(Text)
+    job_location = Column(Text)
+    job_description = Column(Text)  # full JD text
+    source_url = Column(Text)
+    date_posted = Column(Date)
+    contact_name = Column(Text)
+    contact_email = Column(Text)
 
 # ---------------------------------------------------------------------------
-# Generated outputs layer -- corresponds to Step 5 (apply-time log/tracker)
+# Application layer -- apply/ module (2026-08-19, replaces generated_outputs)
 # ---------------------------------------------------------------------------
+# current_stage is a fixed CHECK vocabulary, same pattern as
+# role_scope/metric_type elsewhere in this schema. interview_round is a
+# plain counter incremented by CLI-layer logic (apply/application_log.py)
+# when current_stage transitions to 'Interviewing' -- deliberately NOT a
+# database trigger, consistent with fill_pending_support_levels()'s
+# "business logic stays in Python" philosophy above.
 
-class GeneratedOutputORM(Base):
-    __tablename__ = "generated_outputs"
+APPLICATION_CURRENT_STAGE_OPTIONS = (
+    "Applied",
+    "Screening",
+    "Interviewing",
+    "Offer",
+    "Rejected",
+    "Withdrawn",
+    "Ghosted",
+)
 
-    output_id = _uuid_pk()
-    jd_reference = Column(Text)
-    used_claim_ids = Column(ARRAY(PGUUID(as_uuid=True)))
-    output_type = Column(Text)
-    generated_date = Column(DateTime, server_default=func.now())
-    human_review_status = Column(Boolean, default=False)
+class ApplicationORM(Base):
+    __tablename__ = "application"
+    __table_args__ = (
+        CheckConstraint(
+            "current_stage IN ('Applied', 'Screening', 'Interviewing', 'Offer', "
+            "'Rejected', 'Withdrawn', 'Ghosted')",
+            name="application_current_stage_valid",
+        ),
+    )
 
+    application_id = _uuid_pk()
+    job_id = Column(PGUUID(as_uuid=True), ForeignKey("job.job_id"))  # company_name/job_title read through this FK
+    file_path = Column(Text, nullable=True)  # path to the CV version actually used for this application
+    current_stage = Column(Text, nullable=False, default="Applied")
+    interview_round = Column(Integer, nullable=False, default=0)  # incremented by CLI logic, not a DB trigger
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now())
 
 # ---------------------------------------------------------------------------
 # Generic select-or-create helper (exact match)
 # ---------------------------------------------------------------------------
 
 ModelT = TypeVar("ModelT", bound=Base)
-
 
 def select_or_create(
     session: Session,
@@ -438,7 +479,6 @@ def select_or_create(
     session.flush()
     return new_obj
 
-
 def list_rows(session: Session, model: Type[ModelT], **filters) -> Sequence[ModelT]:
     """Generic query helper -- used e.g. to list existing positions under a company."""
     query = session.query(model)
@@ -446,13 +486,11 @@ def list_rows(session: Session, model: Type[ModelT], **filters) -> Sequence[Mode
         query = query.filter(getattr(model, field) == value)
     return query.all()
 
-
 # ---------------------------------------------------------------------------
 # Fuzzy select-or-create (for company_name / school_name style fields)
 # ---------------------------------------------------------------------------
 
 FUZZY_MATCH_THRESHOLD = 90  # 0-100 similarity score; tune based on real usage
-
 
 def fuzzy_find_candidates(
     session: Session,
@@ -490,7 +528,6 @@ def fuzzy_find_candidates(
     results = [(row, score) for _value, score, row in matches]
     return [(row, score) for row, score in results if score >= FUZZY_MATCH_THRESHOLD]
 
-
 def create_row(session: Session, model: Type[ModelT], values: dict) -> ModelT:
     """Straight insert, no matching -- used once the CLI layer has confirmed
     the user really wants a brand new row (no fuzzy match accepted)."""
@@ -499,51 +536,33 @@ def create_row(session: Session, model: Type[ModelT], values: dict) -> ModelT:
     session.flush()
     return new_obj
 
-
 # ---------------------------------------------------------------------------
 # Governance support_level computation
 # ---------------------------------------------------------------------------
 # support_level is a RULE-BASED aggregate, never LLM-scored or freely
-# user-selected (see GovernanceORM.support_level and models.py's
-# GovernanceBase docstring: "rule-based aggregate (max), not LLM-scored").
-# It combines two independent signals collected earlier in the add-claim
-# flow, which answer two DIFFERENT questions and therefore aggregate in
-# OPPOSITE directions across multiple rows:
+# user-selected. It combines two independent signals collected earlier in
+# the add-claim flow, which answer two DIFFERENT questions and therefore
+# aggregate in OPPOSITE directions across multiple rows:
 #
-#   - evidence_level (L1 strongest -> L4 weakest), one per evidence row --
-#     answers "did this actually happen, and how well is that documented?"
-#     A claim may have MULTIPLE evidence rows (e.g. one L1 direct artifact
-#     plus one L3 supporting mention). These aggregate with OR logic: take
-#     the STRONGEST level among them. Any single solid piece of proof is
-#     enough to establish that the underlying event happened -- additional
-#     weaker evidence alongside it does not drag the result down.
+# - evidence_level (L1 strongest -> L4 weakest), one per evidence row --
+#   answers "did this actually happen, and how well is that documented?"
+#   Aggregates with OR logic: take the STRONGEST level among them.
 #
-#   - metric_confidence (Precise/Estimated/Rough impression), one per
-#     claim_metric row -- answers "how accurate is the number we're
-#     citing?" A claim may cite MULTIPLE metrics (e.g. "processing time"
-#     AND "customer satisfaction" in the same description). These
-#     aggregate with AND logic: take the WEAKEST confidence among them.
-#     Every cited number ends up in the final CV bullet, so if even one of
-#     them is a rough guess, that weakest number drags down trust in the
-#     whole claim -- unlike evidence, one strong number does NOT excuse
-#     another weak one.
+# - metric_confidence (Precise/Estimated/Rough impression), one per
+#   claim_metric row -- answers "how accurate is the number we're
+#   citing?" Aggregates with AND logic: take the WEAKEST confidence
+#   among them.
 #
 # Final aggregation: support_level = the WEAKER of (evidence_component,
-# metric_component). A claim with rock-solid evidence but a wildly guessed
-# metric should not be reported as fully L1-supported, and vice versa. If
-# the claim has no claim_metric rows at all (not every result is
-# quantifiable), support_level is just the evidence_component.
+# metric_component).
 
 _LEVEL_STRENGTH: dict[str, int] = {"L1": 4, "L2": 3, "L3": 2, "L4": 1}
 
-# Tunable mapping, same spirit as FUZZY_MATCH_THRESHOLD above -- adjust
-# based on real usage if these turn out too strict/lenient.
 _METRIC_CONFIDENCE_TO_LEVEL: dict[str, str] = {
     "Precise": "L1",
     "Estimated": "L3",
     "Rough impression": "L4",
 }
-
 
 def compute_support_level(
     evidence_levels: Sequence[str],
@@ -552,23 +571,17 @@ def compute_support_level(
     """
     Computes governance.support_level from the evidence and metric data
     for a claim. Called from two places:
-      1. fill_pending_support_levels() below, explicitly, right after
-         add-claim's transaction commits (see onboard/cli.py's
-         add_claim()).
-      2. scripts/backfill_governance.py, for one-off migration of claims
-         that predate the governance layer entirely (missing GovernanceORM
-         row, not just a missing support_level value).
+    1. fill_pending_support_levels() below, explicitly, right after
+       add-claim's transaction commits.
+    2. scripts/backfill_governance.py, for one-off migration of claims
+       that predate the governance layer entirely.
 
     `evidence_levels`: the evidence_level of every EvidenceORM row for this
-    claim (must be non-empty -- a claim can't exist with zero evidence per
-    governance principles). Aggregated with MAX (OR logic, see module note
-    above): any one strong piece of evidence is enough.
+    claim (must be non-empty). Aggregated with MAX (OR logic).
 
     `metric_confidences`: the metric_confidence of every ClaimMetricORM
-    row for this claim. May be empty if the claim has no quantifiable
-    metrics. Aggregated with MIN after mapping onto the L1-L4 scale (AND
-    logic, see module note above): the weakest cited number drags down the
-    whole claim.
+    row for this claim. May be empty. Aggregated with MIN after mapping
+    onto the L1-L4 scale (AND logic).
 
     Returns the weaker of the two aggregated components.
     """
@@ -592,23 +605,9 @@ def compute_support_level(
 
     return min([evidence_component, metric_component], key=lambda lvl: _LEVEL_STRENGTH[lvl])
 
-
 # ---------------------------------------------------------------------------
 # Support_level autofill -- explicit call, no event registration (v1.3)
 # ---------------------------------------------------------------------------
-# WHY EXPLICIT INSTEAD OF A GLOBAL HOOK: governance conceptually only
-# exists for claims -- no other entity (company/school/position/degree/
-# project) ever has a governance row. A global Session-level after_commit
-# listener (the v1.2 approach) would fire on EVERY commit app-wide
-# (add-project, add-company, add-position, add-degree, ...) even though
-# only add-claim ever needs this check. That's broader coupling than the
-# problem actually requires. This function is instead called ONCE,
-# explicitly, by the one caller that legitimately needs it --
-# onboard/cli.py's add_claim(), right after its own `with get_session()`
-# block finishes committing all claim-related writes (problem, action,
-# claim, metrics, evidence, tags, governance). No other command calls
-# this function, so no other flow ever triggers this check.
-
 
 def fill_pending_support_levels() -> int:
     """
@@ -635,10 +634,6 @@ def fill_pending_support_levels() -> int:
         for governance in pending:
             evidences = list_rows(fill_session, EvidenceORM, claim_id=governance.claim_id)
             if not evidences:
-                # Data-integrity edge case (a claim with zero evidence
-                # shouldn't exist per governance principles) -- skip this
-                # row silently rather than crashing the whole batch; it
-                # will be retried the next time this function is called.
                 continue
 
             metrics = list_rows(fill_session, ClaimMetricORM, claim_id=governance.claim_id)

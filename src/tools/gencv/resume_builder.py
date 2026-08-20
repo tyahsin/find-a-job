@@ -1,35 +1,43 @@
 """
 resume_builder.py
-Version: v14 (2026-08-16)
+Version: v17 (2026-08-19)
 
 Changelog:
+- v17 (2026-08-19): Per user request (2026-08-19):
+  1. build_resume_yaml() renamed to build_cv_yaml() (name only, no
+     signature/behavior change).
+  2. render_pdf() no longer reads settings.yaml to determine the PDF
+     output path -- that logic is fully removed. `--settings` is still
+     passed to the rendercv CLI as before (settings.yaml may still hold
+     other rendercv_settings the user cares about, e.g. bold_keywords),
+     but the PDF destination is now ALWAYS computed in Python and passed
+     via `--pdf-path`, never read back out of the YAML file.
+  3. render_pdf()'s pdf_path parameter is now REQUIRED (previously
+     optional) -- there is no more "fall back to settings.yaml's
+     pdf_path" behavior, so a caller-supplied path is mandatory.
+  4. build_default_output_path() replaced by build_cv_pdf_path(), which
+     implements the new required naming scheme:
+     - folder: {OUTPUT_DIR}/{job_title}_{company_name}/
+     - filename: cv_{name}_{job_title}_{company_name}.pdf
+     - full path: {OUTPUT_DIR}/{job_title}_{company_name}/cv_{name}_{job_title}_{company_name}.pdf
+     OUTPUT_DIR comes from core.config.get_cv_config() (reads OUTPUT_DIR
+     from .env). The folder is created via pdf_path.parent.mkdir(...) at
+     render_pdf() call time if it doesn't exist yet -- build_cv_pdf_path()
+     itself only computes the path, it doesn't touch the filesystem.
+- v16 (2026-08-19): Renamed render_pdf()'s pdf_output_path parameter to
+  pdf_path, and switched to core.config.get_cv_config() (renamed from
+  get_apply_config() in config.py v3).
+- v15 (2026-08-19): render_pdf() gained an optional pdf_output_path
+  parameter, passed to `rendercv render` via the `--pdf-path` CLI flag.
 - v14 (2026-08-16): build_skills_section() now filters to
-tag_category == "skill" ONLY before calling skill_grouper.
-group_skills_for_jd() -- domain and job_function tags are no longer
-passed into the skills section grouping at all. Rationale (per user
-decision, 2026-08-16): domain (industry knowledge) and job_function
-(role-type) tags describe WHAT DOMAIN/ROLE the candidate operates in,
-not a technical skill -- mixing them into a "skills" section grouped by
-JD-specific presentation logic (skill_grouper.py) was conflating two
-different kinds of information. These two tag categories are now
-surfaced instead via summary_writer.py v2's optional
-domain_job_function_tags parameter (auxiliary context for the resume
-summary, not a forced-inclusion requirement). Added a new helper,
-fetch_domain_job_function_tags(), so pipeline.py can collect these tags
-and pass them to summary_writer.draft_and_confirm_summary() without
-resume_builder.py and summary_writer.py needing to share internal query
-logic.
+  tag_category == "skill" ONLY before calling skill_grouper.
+  group_skills_for_jd().
 - v13 (2026-08-16): build_skills_section()/build_resume_yaml() gained a
-required job_description parameter, threading through to the new
-gencv/skill_grouper.py module -- a single batch LLM call (capped at 4
-groups) replaces the previous hardcoded skill/domain/job_function
-label_map, followed by a mandatory interactive human confirmation step.
+  required job_description parameter, threading through to
+  gencv/skill_grouper.py.
 - v12 (2026-08-16) -- QA fixes: sections["projects"] only written when
-non-empty; build_education_entries() signature simplified (dropped
-degree_ids_with_projects), using relevant_degrees directly as the single
-source of truth for the education section.
-- v11 (2026-08-16): Reverted build_education_entries()'s sort key from
-end_date back to start_date.
+  non-empty; build_education_entries() signature simplified.
+- v11 (2026-08-16): Reverted build_education_entries()'s sort key.
 - v10 (2026-08-16): Added build_project_entries().
 - v9 (2026-08-15): summary moved into sections dict as a TextEntry.
 - v1 (2026-08-10, inferred): Initial resume YAML assembly + rendercv CLI call.
@@ -45,6 +53,7 @@ from collections import defaultdict
 
 import yaml
 
+from core.config import get_cv_config
 from core.db import get_session, ClaimMetricORM, ClaimTagORM, TagORM, IdentityORM, NetworkORM, DegreeORM, SchoolORM
 from gencv.experience_matcher import fetch_experience_contexts, to_uuid_list
 from gencv.skill_grouper import group_skills_for_jd
@@ -53,9 +62,7 @@ TEMPLATES_DIR = pathlib.Path(__file__).parent / "templates"
 print(f"[INFO] Using templates from {TEMPLATES_DIR.resolve()}")
 
 
-def build_experience_entries(
-    session, claim_ids: list[str], description_overrides: dict[str, str] | None = None
-) -> list[dict]:
+def build_experience_entries(session, claim_ids, description_overrides=None):
     """依 claim_id 清單取得完整背景，篩出 WORK TRACK（is_work_track=True）子集，
     依組織+職稱分組，組成 rendercv ExperienceEntry 清單。"""
     contexts = fetch_experience_contexts(session, claim_ids)
@@ -63,7 +70,7 @@ def build_experience_entries(
 
     work_claim_ids = [cid for cid in claim_ids if contexts.get(cid, {}).get("is_work_track")]
 
-    metrics_by_claim: dict[str, list] = defaultdict(list)
+    metrics_by_claim = defaultdict(list)
     if work_claim_ids:
         metric_rows = (
             session.query(ClaimMetricORM)
@@ -73,8 +80,8 @@ def build_experience_entries(
         for m in metric_rows:
             metrics_by_claim[str(m.claim_id)].append(m)
 
-    grouped: dict[tuple, list[str]] = defaultdict(list)
-    meta: dict[tuple, dict] = {}
+    grouped = defaultdict(list)
+    meta = {}
 
     for claim_id in work_claim_ids:
         ctx = contexts.get(claim_id)
@@ -101,9 +108,7 @@ def build_experience_entries(
     return entries
 
 
-def build_project_entries(
-    session, claim_ids: list[str], description_overrides: dict[str, str] | None = None
-) -> list[dict]:
+def build_project_entries(session, claim_ids, description_overrides=None):
     """依 claim_id 清單取得完整背景，篩出 EDUCATION TRACK（is_work_track=False）
     子集，依 project_name 分組，組成 rendercv ProjectEntry 清單。"""
     contexts = fetch_experience_contexts(session, claim_ids)
@@ -114,8 +119,8 @@ def build_project_entries(
     if not project_claim_ids:
         return []
 
-    grouped: dict[tuple, list[str]] = defaultdict(list)
-    meta: dict[tuple, dict] = {}
+    grouped = defaultdict(list)
+    meta = {}
 
     for claim_id in project_claim_ids:
         ctx = contexts.get(claim_id)
@@ -141,7 +146,7 @@ def build_project_entries(
     return entries
 
 
-def build_education_entries(session, relevant_degrees: list[DegreeORM]) -> list[dict]:
+def build_education_entries(session, relevant_degrees):
     """把 education_selector.select_relevant_degrees() 選出的 DegreeORM 清單
     直接組成 education section，不再額外篩選。只放
     institution/area/degree/start_date/end_date。排序依 start_date 倒序。"""
@@ -156,7 +161,7 @@ def build_education_entries(session, relevant_degrees: list[DegreeORM]) -> list[
 
     entries = []
     for degree in relevant_degrees:
-        entry: dict = {
+        entry = {
             "institution": schools.get(degree.school_id),
             "area": degree.degree_name,
         }
@@ -171,12 +176,12 @@ def build_education_entries(session, relevant_degrees: list[DegreeORM]) -> list[
     return entries
 
 
-def build_skills_section(session, claim_ids: list[str], job_description: str) -> list[dict]:
+def build_skills_section(session, claim_ids, job_description):
     """從關聯的標籤中取得 tag_name，交給 skill_grouper.group_skills_for_jd()
     依這份 JD 重新分組（上限4組，含未分類 tag 的互動式指派、以及新增分組的
     互動指令），輸出 rendercv OneLineEntry 清單。
 
-    (v14) 只撈 tag_category == "skill" 的 tag -- domain / job_function
+    只撈 tag_category == "skill" 的 tag -- domain / job_function
     類 tag 已改由 summary_writer.py 的 domain_job_function_tags 參數處理
     （見 fetch_domain_job_function_tags()），不再進入 skills section。
     """
@@ -191,8 +196,8 @@ def build_skills_section(session, claim_ids: list[str], job_description: str) ->
         .all()
     )
 
-    seen_tags: set[str] = set()
-    tags_with_category: list[tuple[str, str]] = []
+    seen_tags = set()
+    tags_with_category = []
     for tag in tag_rows:
         if tag.tag_name not in seen_tags:
             seen_tags.add(tag.tag_name)
@@ -210,13 +215,12 @@ def build_skills_section(session, claim_ids: list[str], job_description: str) ->
     ]
 
 
-def fetch_domain_job_function_tags(session, claim_ids: list[str]) -> list[str]:
-    """(v14, new) 撈出 claim_ids 關聯到的 domain / job_function 類 tag_name
+def fetch_domain_job_function_tags(session, claim_ids):
+    """撈出 claim_ids 關聯到的 domain / job_function 類 tag_name
     清單（去重），供 pipeline.py 傳給
     summary_writer.draft_and_confirm_summary() 當輔助訊號使用。與
     build_skills_section() 互斥 -- 該函式只處理 tag_category == "skill"，
-    這裡處理另外兩類，兩者合起來剛好覆蓋全部 tag_category，不重疊。
-    """
+    這裡處理另外兩類，兩者合起來剛好覆蓋全部 tag_category，不重疊。"""
     if not claim_ids:
         return []
 
@@ -228,8 +232,8 @@ def fetch_domain_job_function_tags(session, claim_ids: list[str]) -> list[str]:
         .all()
     )
 
-    seen: set[str] = set()
-    result: list[str] = []
+    seen = set()
+    result = []
     for tag in tag_rows:
         if tag.tag_name not in seen:
             seen.add(tag.tag_name)
@@ -237,7 +241,7 @@ def fetch_domain_job_function_tags(session, claim_ids: list[str]) -> list[str]:
     return result
 
 
-def build_social_networks_section(networks: list[NetworkORM]) -> list[dict]:
+def build_social_networks_section(networks):
     """把 NetworkORM 清單轉成 rendercv SocialNetwork 清單（network/username 欄位）。"""
     return [
         {"network": n.network, "username": n.username}
@@ -245,22 +249,23 @@ def build_social_networks_section(networks: list[NetworkORM]) -> list[dict]:
     ]
 
 
-def build_resume_yaml(
-    claim_ids: list[str],
-    identity: IdentityORM,
-    output_path: str,
-    job_description: str,
-    headline: str | None = None,
-    networks: list[NetworkORM] | None = None,
-    relevant_degrees: list[DegreeORM] | None = None,
-    description_overrides: dict[str, str] | None = None,
-    name: str | None = None,
-    summary: str | None = None,
-) -> str:
-    """組出 rendercv 看得懂的 cv YAML（只含 cv: 區塊），寫入 output_path。
+def build_cv_yaml(
+    claim_ids,
+    identity,
+    output_path,
+    job_description,
+    headline=None,
+    networks=None,
+    relevant_degrees=None,
+    description_overrides=None,
+    name=None,
+    summary=None,
+):
+    """(v17, renamed from build_resume_yaml) 組出 rendercv 看得懂的 cv YAML
+    （只含 cv: 區塊），寫入 output_path。
 
     job_description 為必填參數 -- build_skills_section() 需要它來做
-    JD-specific 的 skill 分組（僅 tag_category == "skill" 的 tag，v14）。
+    JD-specific 的 skill 分組（僅 tag_category == "skill" 的 tag）。
 
     summary 為選填的履歷開場摘要，寫進 sections["summary"]（單元素字串 list，
     RenderCV 的 TextEntry 寫法）。None 代表使用者選擇省略。
@@ -274,7 +279,7 @@ def build_resume_yaml(
         education_entries = build_education_entries(session, relevant_degrees)
         skills_entries = build_skills_section(session, claim_ids, job_description)
 
-    cv_block: dict = {
+    cv_block = {
         "name": name if name is not None else identity.name,
         "email": identity.email,
     }
@@ -289,7 +294,7 @@ def build_resume_yaml(
     if social_networks_entries:
         cv_block["social_networks"] = social_networks_entries
 
-    sections: dict = {}
+    sections = {}
     if summary:
         sections["summary"] = [summary]
     sections["education"] = education_entries
@@ -313,13 +318,51 @@ def build_resume_yaml(
     return output_path
 
 
+def build_cv_pdf_path(name: str, job_title: str, company_name: str) -> pathlib.Path:
+    """(v17, replaces build_default_output_path) 依規則組出完整 PDF 輸出路徑：
+
+    - OUTPUT_DIR 來自 core.config.get_cv_config()（讀 .env 的 OUTPUT_DIR，
+      未設定則預設 ~/gencv_applications）。
+    - folder: {OUTPUT_DIR}/{job_title}_{company_name}/
+    - filename: cv_{name}_{job_title}_{company_name}.pdf
+    - 回傳完整路徑: {OUTPUT_DIR}/{job_title}_{company_name}/cv_{name}_{job_title}_{company_name}.pdf
+
+    這個函式只計算路徑字串，不建立資料夾 -- 資料夾的建立交給
+    render_pdf()（呼叫時才 mkdir，若已存在則不動作）。
+    name/job_title/company_name 皆做輕量清洗（去頭尾空白、空白轉底線），
+    不是完整的 slug 函式，其他特殊字元不會被處理。
+    """
+    cv_config = get_cv_config()
+
+    def _clean(value: str, fallback: str) -> str:
+        return (value or fallback).strip().replace(" ", "_")
+
+    safe_name = _clean(name, "UnknownName")
+    safe_job_title = _clean(job_title, "UnknownRole")
+    safe_company = _clean(company_name, "UnknownCompany")
+
+    folder = cv_config.output_dir / f"{safe_job_title}_{safe_company}"
+    filename = f"cv_{safe_name}_{safe_job_title}_{safe_company}.pdf"
+    return folder / filename
+
+
 def render_pdf(
     cv_yaml_path: pathlib.Path,
+    pdf_path: pathlib.Path,
     design_path: pathlib.Path | None = None,
     locale_path: pathlib.Path | None = None,
     settings_path: pathlib.Path | None = None,
-) -> None:
-    """呼叫 `rendercv render` CLI，把 cv YAML 排版編譯成 PDF。"""
+):
+    """呼叫 `rendercv render` CLI，把 cv YAML 排版編譯成 PDF。
+
+    (v17) pdf_path 現在是必填參數 -- 不再從 settings.yaml 讀取任何
+    pdf_path 值來當備援，PDF 輸出路徑一律由呼叫端算好傳入（通常搭配
+    build_cv_pdf_path()），並透過 `--pdf-path` CLI 參數告訴 rendercv。
+    `--settings` 仍會照常傳給 rendercv CLI -- settings.yaml 裡其他
+    render 設定（非 pdf_path 的部分）不受影響，只是不再從裡面讀值。
+
+    會自動建立 pdf_path 所在資料夾（若不存在）。
+    """
     design_path = design_path or TEMPLATES_DIR / "design.yaml"
     locale_path = locale_path or TEMPLATES_DIR / "locale.yaml"
     settings_path = settings_path or TEMPLATES_DIR / "settings.yaml"
@@ -329,15 +372,15 @@ def render_pdf(
             print(f"[ERROR] 找不到檔案: {f}", file=sys.stderr)
             sys.exit(1)
 
-    with open(settings_path, "r", encoding="utf-8") as f:
-        settings = yaml.safe_load(f)
-    pdf_out_path = settings["settings"]["render_command"]["pdf_path"]
+    pdf_path = pathlib.Path(pdf_path)
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
         "rendercv", "render", str(cv_yaml_path),
         "--settings", str(settings_path),
         "--design", str(design_path),
-        "--locale-catalog", str(locale_path)
+        "--locale-catalog", str(locale_path),
+        "--pdf-path", str(pdf_path),
     ]
 
     print("[INFO] Running:", " ".join(cmd))
@@ -353,8 +396,7 @@ def render_pdf(
             print(result.stdout, file=sys.stderr)
         sys.exit(result.returncode)
 
-    print(f"[OK] PDF 已產出: {pdf_out_path}")
     if result.stdout:
         print(result.stdout)
 
-    return pdf_out_path
+    return str(pdf_path)
