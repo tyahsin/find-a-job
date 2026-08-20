@@ -1,5 +1,4 @@
 import typer
-import click
 
 from onboard.cli import app as onboard_app
 from gencv.cli import app as gencv_app, gen_cv
@@ -15,7 +14,7 @@ app.add_typer(track_app, name="track")
 @app.command("apply")
 def apply(
     jd_file: str = typer.Option(
-        None, "--jd-file", help="Path to a JD text file (triggers LLM extraction + one-shot confirmation)"
+        ..., "--jd-file", help="Path to a JD text file (triggers LLM extraction + one-shot confirmation)"
     ),
 ) -> None:
     job_id = add_job(jd_file=jd_file)
