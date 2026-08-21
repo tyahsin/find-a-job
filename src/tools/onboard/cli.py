@@ -137,7 +137,7 @@ from core.db import (
     select_or_create,
 )
 from core.source_reader import FileReadError, UnsupportedFileTypeError, read_source
-from core.llm_client import get_llm_client
+from core.llm_client import get_llm_client, LLMResponse
 from onboard.prompts import *
 
 app = typer.Typer(help="Add experience entries to database.")
@@ -1108,7 +1108,7 @@ def _resolve_metrics(session, claim: ClaimORM) -> list[ClaimMetricORM]:
     client = get_llm_client()
     response = client.generate_text(
         system_prompt=METRIC_EXTRACTION_SYSTEM_PROMPT,
-        user_prompt=build_metric_extraction_prompt(claim.description),
+        user_prompt=build_metric_extraction_prompt(claim.claim_description),
     )
     drafts = parse_metric_response(response.text)
     finalized = _review_metric_drafts(drafts)
@@ -1226,7 +1226,7 @@ def _build_static_context(session, project: ProjectORM) -> str:
         if school is not None:
             parts.append(f"School: {school.school_name}" + (f" ({school.location})" if school.location else ""))
         if degree is not None:
-            parts.append(f"Degree/Program: {degree.degree_name}" + (f", Subject: {degree.subject}" if degree.subject else ""))
+            parts.append(f"Degree/Program: {degree.degree_name}") # + (f", Subject: {degree.subject}" if degree.subject else "")
         return "; ".join(parts)
 
     return ""
@@ -1246,9 +1246,9 @@ def _resolve_tags(
     response = client.generate_text(
         system_prompt=TAG_SYSTEM_PROMPT,
         user_prompt=build_tag_prompt(
-            problem_description=problem.description,
-            action_description=action.description,
-            description=claim.description,
+            problem_description=problem.problem_description,
+            action_description=action.action_description,
+            description=claim.claim_description,
             evidence_type=evidence_types_joined,
             static_context=static_context,
         ),
@@ -1358,6 +1358,152 @@ def add_claim(
     if tag_names:
         console.print(f"[green]Tags: {', '.join(tag_names)}[/green]")
     console.print("[green]Governance support_level: computed and filled in.[/green]")
+
+# ---------------------------------------------------------------------------
+# add-project-claim: from project to claims to all corresponding columns
+# ---------------------------------------------------------------------------
+def _resolve_llm_response(llm_response: LLMResponse) -> list:
+    import re, json
+
+    raw_text = llm_response.text.strip()
+    match = re.search(r"```(?:json)?\s*(\[.*\])\s*```", raw_text, re.DOTALL)
+    json_str = match.group(1) if match else raw_text
+
+    try:
+        parsed = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"LLMResponse unable to parse: {e}\nerror message: {llm_response.finish_reason}") from e
+
+    if not isinstance(parsed, list):
+        raise ValueError(f"預期回傳 JSON array，實際收到: {type(parsed)}")
+
+    return parsed
+
+
+def _resolve_claims(project: ProjectORM) -> list:
+    """
+    """
+    source: str = project.project_context_source
+    has_source: bool = False
+    path: str
+
+    if source is not None:
+         has_source = typer.confirm(
+                f"There's a source is your project. Would you like to derive claims from {source}?",
+                default=True,
+            )     
+         path = source
+    else:                 
+        has_source = typer.confirm(
+                "Do you have a source document to base the degree description on (file path or URL)?",
+                default=True,
+            )
+        path = typer.prompt("Enter a new file path (.txt / .md / .pdf) or URL")
+        
+    if has_source:
+        while True:
+            # path = typer.prompt("Enter a new file path (.txt / .md / .pdf) or URL")
+            try:
+                source_text = read_source(path)
+                break
+            except (FileReadError, UnsupportedFileTypeError) as exc:
+                console.print(f"[red]{exc}[/red]")
+
+    client = get_llm_client()
+    response = client.generate_text(
+        system_prompt=CLAIMS_SYSTEM_PROMPT,
+        user_prompt=build_claims_prompt_from_source(source_text),
+        max_tokens=2000 # tyahsin: this has to do with the constraint of number of claims generated
+    )
+    raw_claims = _resolve_llm_response(response)
+
+    return raw_claims
+
+
+@app.command("add-claims")
+def add_claims(
+        project_id: Optional[UUID] = typer.Option(
+        None,
+        "--project-id",
+        help="UUID of the project to add a claim to. If omitted, an interactive selector is shown.",
+    ),
+):
+    """Interactively add a problem -> action -> claim -> metric(s) -> evidence(s) -> tag(s) -> governance record."""
+    claim_id: Optional[UUID] = None
+    evidence_ids: list[UUID] = []
+    metric_summaries: list[str] = []
+    tag_names: list[str] = []
+
+    with get_session() as session:
+        if project_id is not None:
+            project = session.get(ProjectORM, project_id)
+            if project is None:
+                console.print(f"[red]No project found for project_id: {project_id}[/red]")
+                raise typer.Exit(code=1)
+        else:
+            project = _select_project_interactively(session)
+
+        console.print(f"[bold]Selected project: {project.project_name}[/bold]\n")
+
+        raw_claims = _resolve_claims(project) 
+        for i, raw_claim in enumerate(raw_claims):
+            confirmed = {}
+            for key, val in raw_claim.items(): 
+                confirmed_val = _confirm_or_edit(val, key)
+                confirmed[key] = confirmed_val
+
+            console.print(f"[green]No. {(i+1)} claim has been confirmed. Ready to insert into database:[/green]")
+            problem = create_row(
+                session,
+                ProblemORM,
+                {
+                    "project_id": project.project_id,
+                    "problem_description": confirmed["problem_description"],
+                    "stakeholder_impact": confirmed["stakeholder_impact"],
+                    "baseline_metric": confirmed["baseline_metric"],
+                }
+            )
+            action = create_row(
+                session,
+                ActionORM,
+                {
+                    "problem_id": problem.problem_id,
+                    "action_description": confirmed["action_description"],
+                    "role_scope": confirmed["role_scope"],
+                }
+            )
+            claim = create_row(
+                session,
+                ClaimORM,
+                {
+                    "action_id": action.action_id,
+                    "claim_description": confirmed["claim_description"],
+                }
+            )
+            metrics = _resolve_metrics(session, claim)
+            evidences = _resolve_evidences(session, claim)
+            tags = _resolve_tags(session, claim, problem, action, evidences, project)
+            _resolve_governance(session, claim)
+
+            if not _confirm_final_write():
+                console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+                raise typer.Exit(code=0)
+
+            claim_id = claim.claim_id
+            evidence_ids = [evidence.evidence_id for evidence in evidences]
+            metric_summaries = [f"{m.metric_label}: {m.metric_value}" for m in metrics]
+            tag_names = [tag.tag_name for tag in tags]
+
+            fill_pending_support_levels()
+
+            console.print(f"[green]Done! New claim ID: {claim_id}[/green]")
+            console.print(f"[green]Evidence IDs ({len(evidence_ids)} total): {', '.join(str(e) for e in evidence_ids)}[/green]")
+            if metric_summaries:
+                console.print(f"[green]Metrics: {'; '.join(metric_summaries)}[/green]")
+            if tag_names:
+                console.print(f"[green]Tags: {', '.join(tag_names)}[/green]")
+            console.print("[green]Governance support_level: computed and filled in.[/green]")
+
 
 if __name__ == "__main__":
     app()

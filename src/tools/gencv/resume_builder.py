@@ -326,7 +326,7 @@ def build_cv_yaml( # tyahsin: consolidation should happen here
     name, email, phone, location, visa_status = build_identity_entry(job_description, designated_name) # tyahsin: where do I put visa_status?
     networks_entries = build_network_entries(job_description)
     with get_session() as session:
-        experience_entries = build_experience_entries(session, claim_ids, description_overrides)
+        # experience_entries = build_experience_entries(session, claim_ids, description_overrides)
         project_entries = build_project_entries(session, claim_ids, description_overrides)
         education_entries = build_education_entries(session, relevant_degrees)
         skills_entries = build_skill_entries(session, claim_ids, job_description)

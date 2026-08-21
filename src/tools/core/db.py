@@ -265,6 +265,7 @@ class ProjectORM(Base):
     start_date = Column(Date)
     end_date = Column(Date, nullable=True)
     project_context = Column(Text)
+    project_context_source = Column(Text, nullable=True)
 
 # ---------------------------------------------------------------------------
 # Problem layer -- belongs to a project
@@ -275,7 +276,7 @@ class ProblemORM(Base):
 
     problem_id = _uuid_pk()
     project_id = Column(PGUUID(as_uuid=True), ForeignKey("project.project_id"))
-    description = Column(Text)
+    problem_description = Column(Text)
     stakeholder_impact = Column(Text, nullable=True)
     baseline_metric = Column(Text, nullable=True)
 
@@ -288,7 +289,7 @@ class ActionORM(Base):
 
     action_id = _uuid_pk()
     problem_id = Column(PGUUID(as_uuid=True), ForeignKey("problem.problem_id"))
-    description = Column(Text)
+    action_description = Column(Text)
     role_scope = Column(Text, nullable=True)  # e.g. Led / Collaborated / Supported
 
 # ---------------------------------------------------------------------------
@@ -300,7 +301,7 @@ class ClaimORM(Base):
 
     claim_id = _uuid_pk()
     action_id = Column(PGUUID(as_uuid=True), ForeignKey("action.action_id"))
-    description = Column(Text)  # core CV bullet content (formerly result_statement)
+    claim_description = Column(Text)  # core CV bullet content (formerly result_statement)
 
 class ClaimMetricORM(Base):
     """

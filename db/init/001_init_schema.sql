@@ -86,16 +86,16 @@ CREATE TABLE project (
 CREATE TABLE problem (
     problem_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID REFERENCES project(project_id), /* 對應哪個專案，而非公司或職位本身 */
-    description TEXT, /* 問題描述：應然與實然的落差 */
+    problem_description TEXT, /* 問題描述：應然與實然的落差 */
     stakeholder_impact TEXT, /* 這個落差影響誰、影響多大 */
-    baseline_metric TEXT /* 問題發生前的現況指標 */ /* tyahsin: should this mirror some columns in claim table? */
+    baseline_metric TEXT /* 問題發生前的現況指標 */ 
 );
 
 -- 行動層
 CREATE TABLE action (
     action_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     problem_id UUID REFERENCES problem(problem_id), /* 對應解決哪個問題 */
-    description TEXT, /* 具體做了什麼 */
+    action_description TEXT, /* 具體做了什麼 */
     role_scope TEXT /* 主導/協同/支援 (Led/Collaborated/Supported) */
 );
 
@@ -103,7 +103,7 @@ CREATE TABLE action (
 CREATE TABLE claim (
     claim_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     action_id UUID REFERENCES action(action_id), /* 對應哪個行動產生此結果 */
-    description TEXT /* 結果敘述，CV bullet 的核心內容來源（原 result_statement） */
+    claim_description TEXT /* 結果敘述，CV bullet 的核心內容來源 */
 );
 
 -- 量化指標層 (Claim Metric) -- 一個 claim 可能有多個指標，且不是所有指標

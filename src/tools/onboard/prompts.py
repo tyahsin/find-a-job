@@ -532,3 +532,82 @@ def parse_metric_response(raw_text: str) -> list[tuple[str, str, str]]:
             continue
         results.append((metric_type, metric_label, metric_value))
     return results
+
+
+CLAIMS_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
+Purpose of this task: extract discrete, resume-ready achievement claims from 
+a project or position description. Each claim represents ONE distinct accomplishment 
+— not a duty description (that is handled separately in position.responsibility).
+
+
+MECE extraction rules:
+1. Mutually exclusive: each claim must describe a DIFFERENT accomplishment.
+   If two potential claims share the same core action + same core result,
+   merge them into one. Do not split a single outcome into multiple claims
+   just because it touches multiple skills (e.g. "used Python and Docker to
+   cut deploy time by 40%" is ONE claim, not two).
+2. Collectively exhaustive: scan the ENTIRE input text before finalizing
+   the list. Do not stop at the first few obvious claims — include claims
+   with weaker evidence rather than omitting them, so the human reviewer
+   decides what to keep.
+3. Each claim must be verifiable against the source text. Do not infer or
+   estimate information not present in the source text; use null instead.
+
+
+Field separation rules (critical — do not let these three fields overlap
+or restate each other):
+- problem_description: describes the STATE BEFORE the action. It is the
+  gap between expected and actual state that existed prior to any
+  intervention. Contains no verbs describing what the person did.
+- action_description: describes the INTERVENTION ITSELF. It is what the
+  person concretely did, using an action verb. Contains no outcome or
+  result language.
+- claim_description: describes the STATE AFTER the action — the outcome
+  or result. It is the resume-bullet-ready sentence combining context
+  implicitly, but must not repeat the verb phrase already used in
+  action_description, and must not restate the problem already captured
+  in problem_description.
+If you find yourself repeating the same clause across two of these three
+fields, rewrite one of them to focus strictly on its assigned time frame
+(before / during / after).
+
+
+Output a list of JSON arrays. Each element must match this schema exactly:
+{
+    "problem_description": "the gap between expected and actual state before the action, or null if not stated in source",
+    "stakeholder_impact": "who was affected and how significantly, or null if not stated in source",
+    "baseline_metric": "measurable state before the action, or null if not stated in source",
+    "action_description": "what was concretely done, action-verb start",
+    "role_scope": "Led" | "Collaborated" | "Supported",
+    "claim_description": "the result narrating how the problem is solved through the action, action-verb start"
+}
+
+
+Do not output any field not listed above. Do not output prose outside the
+JSON array.
+
+
+Lenght contraint: action_description and claim_description are 15-30 words
+each. problem_description, stakeholder_impact, and baseline_metric are
+concise (under 20 words) or null when not stated in source.
+
+Output constraint: extract at most 8 claims per call. If the source text
+could yield more than 8 distinct claims, prioritize those with the
+strongest evidence and highest resume relevance; omit the weaker ones
+rather than risk truncating output mid-object.
+"""
+
+def build_claims_prompt_from_source(source_text: str) -> dict:
+    """
+    Use for parsing project.project_context_source to list claims in MECE.
+    The LLM summarizes the ACTUAL document
+    content -- it must not add scope beyond what's written.
+    """
+    return f"""Below is the raw document content source provided by the user. Please
+organize it into a list of Json arrays as system prompt suggested:
+
+---
+{source_text}
+---
+
+Output the list (plain text, no preamble):"""
