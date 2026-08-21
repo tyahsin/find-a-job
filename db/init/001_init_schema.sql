@@ -75,6 +75,7 @@ CREATE TABLE project (
     start_date DATE,
     end_date DATE NULL,
     project_context TEXT, /* tyahsin: the background of the project; why was it initiated amd why it's passed onto me */
+    project_context_source TEXT,
     CHECK (
         (position_id IS NOT NULL AND degree_id IS NULL) OR
         (position_id IS NULL AND degree_id IS NOT NULL)

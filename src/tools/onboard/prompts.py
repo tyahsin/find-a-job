@@ -182,8 +182,23 @@ project and what kind of project it is. This is NOT an outcome narrative
 Suggested length: 1-3 sentences.
 """
 
+def build_project_context_prompt_from_source(source_text: str) -> str:
+    """
+    Use for drafting project.project_context from a source file.
+    The LLM summarizes the ACTUAL document
+    content -- it must not add scope beyond what's written.
+    """
+    return f"""Below is the raw document content provided by the user. Please
+organize it into a concise project background narrative:
 
-def build_project_context_prompt(user_description: str) -> str:
+---
+{source_text}
+---
+
+Output the summary (plain text, no preamble):"""
+
+
+def build_project_context_prompt_from_description(user_description: str) -> str:
     """
     Use for drafting project.project_context from the user's short,
     free-text description of the project's background.

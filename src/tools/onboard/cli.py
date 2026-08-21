@@ -640,12 +640,12 @@ def _draft_responsibility() -> tuple[str, Optional[str]]:
     """Returns (responsibility_text, responsibility_source)."""
     client = get_llm_client()
     has_source = typer.confirm(
-        "Do you have a source document to link the responsibility description to (file path)?",
+        "Do you have a source document to link the responsibility description to (file path or URL)?",
         default=False,
     )
     if has_source:
         while True:
-            path = typer.prompt("Enter file path (.txt / .md / .pdf) or url")
+            path = typer.prompt("Enter file path (.txt / .md / .pdf) or URL")
             try:
                 source_text = read_source(path)
                 break
@@ -705,12 +705,12 @@ def _draft_degree_description() -> tuple[str, Optional[str]]:
     dual entry point, LLM draft + _confirm_or_edit() gate."""
     client = get_llm_client()
     has_source = typer.confirm(
-        "Do you have a source document to base the degree description on (file path)?",
+        "Do you have a source document to base the degree description on (file path or URL)?",
         default=False,
     )
     if has_source:
         while True:
-            path = typer.prompt("Enter file path (.txt / .md / .pdf) or url")
+            path = typer.prompt("Enter file path (.txt / .md / .pdf) or URL")
             try:
                 source_text = read_source(path)
                 break
@@ -805,13 +805,48 @@ def _resolve_project(
     project_name = typer.prompt("Project name")
     start_dt = _prompt_date("Project start date (YYYY-MM-DD)")
     end_dt = _prompt_date("Project end date (YYYY-MM-DD, leave blank)", allow_blank=True)
-    description = typer.prompt("Briefly describe the background/context of this project")
 
     client = get_llm_client()
+    has_source = typer.confirm(
+        "Do you have a source document to link the project description to (file path or URL)?",
+        default=False,
+    )
+    if has_source:
+        while True:
+            path = typer.prompt("Enter file path (.txt / .md / .pdf) or URL")
+            try:
+                source_text = read_source(path)
+                break
+            except (FileReadError, UnsupportedFileTypeError) as exc:
+                console.print(f"[red]{exc}[/red]")
+
+        response = client.generate_text(
+            system_prompt=PROJECT_CONTEXT_SYSTEM_PROMPT,
+            user_prompt=build_project_context_prompt_from_source(source_text),
+        )
+
+        project_context = _confirm_or_edit(response.text, "Project background narrative")
+
+        return create_row(
+                session,
+                ProjectORM,
+                {
+                    "position_id": position_id,
+                    "degree_id": degree_id,
+                    "project_name": project_name,
+                    "start_date": start_dt,
+                    "end_date": end_dt,
+                    "project_context": project_context,
+                },
+            )
+    
+    description = typer.prompt("Briefly describe the scope of responsibilities for this position")
+
     response = client.generate_text(
         system_prompt=PROJECT_CONTEXT_SYSTEM_PROMPT,
-        user_prompt=build_project_context_prompt(description),
+        user_prompt=build_project_context_prompt_from_description(description),
     )
+
     project_context = _confirm_or_edit(response.text, "Project background narrative")
 
     return create_row(

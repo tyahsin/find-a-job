@@ -26,7 +26,7 @@ class FileReadError(RuntimeError):
 def read_source(source: str) -> str:
     """統一入口：自動判斷是本地檔案路徑還是 URL，回傳純文字內容。"""
     if _is_url(source):
-        return _read_url(source)
+        return read_url(source)
     return read_source_file(source)
 
 
@@ -80,7 +80,7 @@ def _read_pdf(path: Path) -> str:
         )
     return content
 
-def _read_url(url: str, timeout: int = 10) -> str:
+def read_url(url: str, timeout: int = 10) -> str:
     import requests
     import trafilatura
 
