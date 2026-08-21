@@ -85,16 +85,35 @@ RELEVANCE_SYSTEM_PROMPT = """You are a resume screening assistant. You will be g
 and a list of the candidate's past experience records (each with an index,
 background, problem, action, result, tags, and that record's usage policy).
 
+
 Judge whether each experience record is relevant to this job posting and
 worth including in a resume tailored to it.
+
+
+A record is relevant if EITHER of the following is true:
+- The business domain or work setting matches the job description (e.g.
+  same industry, same type of stakeholder collaboration), OR
+- The technical skills, methods, or tools demonstrated in the record match
+  skills explicitly required or mentioned in the job description — even if
+  the project's domain or setting (e.g. academic project vs. corporate
+  role) differs from the job posting's context.
+
+
+Do not require both domain match AND skill match simultaneously. A
+technically strong record demonstrating a required skill (e.g. a specific
+ML method, a specific tool, hands-on model development) should be marked
+relevant even if it comes from an academic or personal project, as long as
+the skill itself is explicitly called for in the job description.
+
 
 Tags are an important relevance signal -- tags represent skills/domains/job
 functions the user has manually confirmed for that record. Even if the
 result text itself has no obvious keyword match, a tag that matches the
 job's requirements should still be treated as relevant.
 
+
 If a record's usage policy (use_policy) explicitly excludes this type of
-job, always treat it as not relevant.
+job, always treat it as not relevant, regardless of tag or content match.
 
 Output format: output only the index numbers of relevant records, one per
 line, no other text, no explanation beyond the numbers. If none are
@@ -103,10 +122,10 @@ relevant, output NONE."""
 _EXPERIENCE_CONTEXT_SQL = """
 SELECT
     claim.claim_id,
-    claim.description AS claim_description,
-    action.description AS action_description,
+    claim.claim_description AS claim_description,
+    action.action_description AS action_description,
     action.role_scope,
-    problem.description AS problem_description,
+    problem.problem_description AS problem_description,
     problem.stakeholder_impact,
     project.project_id,
     project.project_name,
@@ -288,7 +307,7 @@ def select_claims(job_description: str) -> list[str]:
         candidate_ids, governances = _resolve_candidate_ids(session)
         if not candidate_ids:
             return []
-
+        
         contexts = fetch_experience_contexts(session, candidate_ids)
         tags_map = fetch_tags_for_claims(session, candidate_ids)
 
@@ -304,7 +323,7 @@ def select_claims(job_description: str) -> list[str]:
             temperature=0.0,
             max_tokens=1000,
         )
-
+        # print(response)
     relevant_indices = _parse_relevant_indices(response.text)
     selected_ids = [
         index_to_claim_id[i] for i in relevant_indices if i in index_to_claim_id
