@@ -136,7 +136,7 @@ from core.db import (
     list_rows,
     select_or_create,
 )
-from core.file_reader import FileReadError, UnsupportedFileTypeError, read_source_file
+from core.source_reader import FileReadError, UnsupportedFileTypeError, read_source
 from core.llm_client import get_llm_client
 from onboard.prompts import *
 
@@ -645,9 +645,9 @@ def _draft_responsibility() -> tuple[str, Optional[str]]:
     )
     if has_source:
         while True:
-            path = typer.prompt("Enter file path (.txt / .md / .pdf)")
+            path = typer.prompt("Enter file path (.txt / .md / .pdf) or url")
             try:
-                source_text = read_source_file(path)
+                source_text = read_source(path)
                 break
             except (FileReadError, UnsupportedFileTypeError) as exc:
                 console.print(f"[red]{exc}[/red]")
@@ -710,9 +710,9 @@ def _draft_degree_description() -> tuple[str, Optional[str]]:
     )
     if has_source:
         while True:
-            path = typer.prompt("Enter file path (.txt / .md / .pdf)")
+            path = typer.prompt("Enter file path (.txt / .md / .pdf) or url")
             try:
-                source_text = read_source_file(path)
+                source_text = read_source(path)
                 break
             except (FileReadError, UnsupportedFileTypeError) as exc:
                 console.print(f"[red]{exc}[/red]")

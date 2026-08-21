@@ -69,7 +69,7 @@ from track.job_app_tracker import (
     update_stage,
 )
 from track.job_extractor import JOB_FIELDS, extract_job_fields
-from core.file_reader import read_source_file
+from core.source_reader import read_source
 from core.llm_reviewer import confirm_fields_once
 
 app = typer.Typer(help="Collect jobs and track applications.")
@@ -119,7 +119,7 @@ def add_job(
       (there is no other source for them without LLM extraction).
     """
     if jd_file:
-        jd_text = read_source_file(jd_file)
+        jd_text = read_source(jd_file)
         extracted = extract_job_fields(jd_text=jd_text, source_url=source_url)
         confirmed = confirm_fields_once(
             fields=extracted,

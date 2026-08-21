@@ -8,3 +8,4 @@ python-dotenv
 pypdf
 typst
 rendercv[full]
+trafilatura

@@ -1,15 +1,16 @@
 """
-core/file_reader.py
+core/source_reader.py
 Unified text extraction for source documents referenced by
 position.responsibility_source (e.g. offer letters, JDs) during onboarding.
 
-Supports .txt, .md, and .pdf. Shared across feature modules -- cv_gen or
+Supports .txt, .md, .pdf, and url. Shared across feature modules -- cv_gen or
 jd_collector can reuse this if they ever need to read uploaded PDFs too.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf"}
 
@@ -20,6 +21,13 @@ class UnsupportedFileTypeError(ValueError):
 
 class FileReadError(RuntimeError):
     pass
+
+
+def read_source(source: str) -> str:
+    """統一入口：自動判斷是本地檔案路徑還是 URL，回傳純文字內容。"""
+    if _is_url(source):
+        return _read_url(source)
+    return read_source_file(source)
 
 
 def read_source_file(file_path: str) -> str:
@@ -71,3 +79,29 @@ def _read_pdf(path: Path) -> str:
             "This may be a scanned/image-based PDF, which requires OCR (not yet supported)."
         )
     return content
+
+def _read_url(url: str, timeout: int = 10) -> str:
+    import requests
+    import trafilatura
+
+    try:
+        resp = requests.get(
+            url,
+            timeout=timeout,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; find-a-job-bot/1.0)"},
+        )
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        raise ValueError(f"URL Unreadable {url}: {e}") from e
+
+    text = trafilatura.extract(resp.text, url=url)
+    if not text:
+        raise ValueError(f"URL {url} Unparsable")
+    return text.strip()
+
+def _is_url(source: str) -> bool:
+    import re
+    
+    URL_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
+
+    return bool(URL_PATTERN.match(source.strip()))
