@@ -837,6 +837,7 @@ def _resolve_project(
                     "start_date": start_dt,
                     "end_date": end_dt,
                     "project_context": project_context,
+                    "project_context_source": path,
                 },
             )
     
