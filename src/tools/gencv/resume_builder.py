@@ -183,17 +183,12 @@ def build_education_entries(session, relevant_degrees): # tyahsin: use project_e
     if not relevant_degrees:
         return []
 
-    school_ids = [d.school_id for d in relevant_degrees if d.school_id]
-    schools = (
-        {s.school_id: s.school_name for s in session.query(SchoolORM).filter(SchoolORM.school_id.in_(school_ids)).all()}
-        if school_ids else {}
-    )
-
     entries = []
     for degree in relevant_degrees:
         entry = {
-            "institution": schools.get(degree.school_id),
+            "institution": session.query(SchoolORM.school_name).filter(SchoolORM.school_id==degree.school_id).scalar(),
             "area": degree.degree_name,
+            "location": session.query(SchoolORM.location).filter(SchoolORM.school_id==degree.school_id).scalar(),
         }
         if degree.degree_level:
             entry["degree"] = degree.degree_level
@@ -326,7 +321,7 @@ def build_cv_yaml( # tyahsin: consolidation should happen here
     name, email, phone, location, visa_status = build_identity_entry(job_description, designated_name) # tyahsin: where do I put visa_status?
     networks_entries = build_network_entries(job_description)
     with get_session() as session:
-        # experience_entries = build_experience_entries(session, claim_ids, description_overrides)
+        experience_entries = build_experience_entries(session, claim_ids, description_overrides)
         project_entries = build_project_entries(session, claim_ids, description_overrides)
         education_entries = build_education_entries(session, relevant_degrees)
         skills_entries = build_skill_entries(session, claim_ids, job_description)
@@ -345,9 +340,9 @@ def build_cv_yaml( # tyahsin: consolidation should happen here
     if summary:
         sections["summary"] = [summary]
     sections["education"] = education_entries
+    sections["experience"] = experience_entries
     if project_entries:
         sections["projects"] = project_entries
-    sections["experience"] = experience_entries
     sections["skills"] = skills_entries
 
     cv_block["sections"] = sections
@@ -359,7 +354,7 @@ def build_cv_yaml( # tyahsin: consolidation should happen here
 
     print(
         f"Generated {output_path} with {len(experience_entries)} experience entries, "
-        f"{len(project_entries)} project entries" #, and {len(education_entries)} education entries."
+        f"{len(project_entries)} project entries, and {len(education_entries)} education entries."
     )
 
     return build_cv_pdf_path(name, job_title, company_name)
