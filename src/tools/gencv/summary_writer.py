@@ -62,41 +62,34 @@ from core.llm_reviewer import parse_review_input
 
 SUMMARY_SYSTEM_PROMPT = """You are a resume summary writer. You will be given a job description, a
 set of already-confirmed resume bullet points (from the experience
-section), a list of the candidate's education entries, and a list of the
-candidate's domain/job-function tags (industry knowledge and role-type
-labels the candidate has confirmed apply to them). Your task is to write
-a short professional summary that will appear at the top of the resume,
-right after the candidate's contact information.
+section), and a list of the candidate's education entries. Your task is
+to write a short professional summary that will appear at the top of the
+resume, right after the candidate's contact information.
 
 Strict rules (must follow):
-1. Base the summary ONLY on the bullet points, education entries, and
-   domain/job-function tags given to you -- do not reference any
-   experience, skill, or achievement that is not reflected in this
-   material.
+1. Base the summary ONLY on the bullet points and education entries
+   given to you -- do not reference any experience, skill, or
+   achievement that is not reflected in this material.
 2. Do not add any concrete fact, number, or degree of achievement beyond
    what the bullet points already state.
-3. The domain/job-function tags are AUXILIARY BACKGROUND CONTEXT ONLY --
-   use them to inform word choice and framing, but you are NOT required
-   to literally mention every tag, or any tag at all, in the summary
-   text.
-4. Judge whether there is an actual, meaningful gap between the
+3. Judge whether there is an actual, meaningful gap between the
    candidate's background and the job description's requirements. If a
    real gap exists, briefly acknowledge the transition in a factual,
    non-defensive way. If NO meaningful gap exists, do NOT invent or imply
    one.
-5. Write in active voice, third person is not used -- write as a direct,
+4. Write in active voice, third person is not used -- write as a direct,
    resume-style summary.
-6. HARD LIMIT: the summary must be AT MOST 3 sentences. Prefer 2
+5. HARD LIMIT: the summary must be AT MOST 3 sentences. Prefer 2
    sentences when 2 are sufficient -- do not pad to reach 3. The word count
    should be less than 45 words.
-7. No filler words, no generic claims not backed by the given material.
-8. Output must be in English, regardless of the input language.
-9. (v3) If you are given a REGENERATION STEERING NOTE, treat it as an
+6. No filler words, no generic claims not backed by the given material.
+7. Output must be in English, regardless of the input language.
+8. (v3) If you are given a REGENERATION STEERING NOTE, treat it as an
    additional preference for HOW to present the same confirmed material
    (tone, length, emphasis, which strengths to foreground) -- it may NOT
    be used to introduce a new fact, skill, or achievement beyond what the
-   bullet points/education/tags already state, even if the note seems to
-   ask for that. If the note conflicts with rules 1/2, follow rules 1/2
+   bullet points/education already state, even if the note seems to ask
+   for that. If the note conflicts with rules 1/2, follow rules 1/2
    instead.
 
 Output format: output ONLY the summary text itself, plain text, no
@@ -111,17 +104,14 @@ SUMMARY_USER_PROMPT_TEMPLATE = """# Job Description
 # Education entries ({education_count} total)
 {education_block}
 
-# Domain / job-function tags ({tag_count} total, auxiliary context only)
-{tags_block}
-
 {steering_note_block}
 Write the professional summary (at most 3 sentences):"""
 
 
-def _format_bullets_block(final_bullets):
-    if not final_bullets:
+def _format_bullets_block(bullets):
+    if not bullets:
         return "(no experience bullets in this resume)"
-    return "\n".join(f"- {b}" for b in final_bullets)
+    return "\n".join(f"- {b}" for b in bullets)
 
 
 def _format_education_block(education_entries):
@@ -134,14 +124,7 @@ def _format_education_block(education_entries):
     return "\n".join(lines)
 
 
-def _format_tags_block(domain_job_function_tags):
-    if not domain_job_function_tags:
-        return "(no domain/job-function tags available for this resume)"
-    return ", ".join(sorted(set(domain_job_function_tags)))
-
-
-def draft_summary(job_description, final_bullets, education_entries,
-                   domain_job_function_tags=None, steering_note=None):
+def draft_summary(job_description, bullets, education_entries, steering_note=None):
     """Single LLM call. Returns the drafted summary text (not yet
     confirmed -- see confirm_summary() for the mandatory human gate).
 
@@ -160,12 +143,10 @@ def draft_summary(job_description, final_bullets, education_entries,
 
     user_prompt = SUMMARY_USER_PROMPT_TEMPLATE.format(
         job_description=job_description,
-        bullet_count=len(final_bullets),
-        bullets_block=_format_bullets_block(final_bullets),
+        bullet_count=len(bullets),
+        bullets_block=_format_bullets_block(bullets),
         education_count=len(education_entries),
         education_block=_format_education_block(education_entries),
-        tag_count=len(domain_job_function_tags) if domain_job_function_tags else 0,
-        tags_block=_format_tags_block(domain_job_function_tags),
         steering_note_block=steering_note_block,
     )
     response = get_llm_client().generate_text(
@@ -177,14 +158,14 @@ def draft_summary(job_description, final_bullets, education_entries,
     return response.text.strip()
 
 
-def confirm_summary(drafted_summary, job_description=None, final_bullets=None,
-                     education_entries=None, domain_job_function_tags=None):
+def confirm_summary(drafted_summary, job_description=None, bullets=None,
+                     education_entries=None):
     """(v3) Uses core.llm_reviewer.parse_review_input(). Commands:
     Enter=accept, 'r'/'r <text>'=regenerate, 'o <text>'=manual override,
     'skip'=omit the summary entirely. Plain 'o' or unrecognized input is
     invalid and re-prompts.
 
-    job_description/final_bullets/education_entries/domain_job_function_tags
+    job_description/bullets/education_entries/domain_job_function_tags
     are optional and only required if the user invokes regenerate (needed
     to re-call draft_summary()) -- if omitted, regenerate falls back to a
     warning and keeps the current draft, mirroring skill_grouper.py's
@@ -214,7 +195,7 @@ def confirm_summary(drafted_summary, job_description=None, final_bullets=None,
         decision = parse_review_input(raw)
 
         if decision.action == "regenerate":
-            if job_description is None or final_bullets is None or education_entries is None:
+            if job_description is None or bullets is None or education_entries is None:
                 print(
                     "  [Warning] Cannot regenerate -- this summary was confirmed without full "
                     "context. Continuing with the current draft."
@@ -222,8 +203,7 @@ def confirm_summary(drafted_summary, job_description=None, final_bullets=None,
                 continue
             print("  Regenerating...")
             current_draft = draft_summary(
-                job_description, final_bullets, education_entries,
-                domain_job_function_tags, steering_note=decision.value,
+                job_description, bullets, education_entries, steering_note=decision.value,
             )
             continue
 
@@ -242,18 +222,17 @@ def confirm_summary(drafted_summary, job_description=None, final_bullets=None,
         print(f"  [Error] {decision.value}")
 
 
-def draft_and_confirm_summary(job_description, final_bullets, education_entries,
-                               domain_job_function_tags=None):
+def write_summary(job_description, bullets, education_entries):
     """Main entry point: single LLM draft + mandatory human confirmation
     (including the (v3) regenerate option). Returns the final summary
     text, or None if the user chose to omit it entirely.
     """
-    drafted = draft_summary(job_description, final_bullets, education_entries, domain_job_function_tags)
+    
+    drafted = draft_summary(job_description, bullets, education_entries)
     confirmed = confirm_summary(
         drafted,
         job_description=job_description,
-        final_bullets=final_bullets,
+        bullets=bullets,
         education_entries=education_entries,
-        domain_job_function_tags=domain_job_function_tags,
     )
     return confirmed if confirmed else None

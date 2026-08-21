@@ -59,6 +59,7 @@ from gencv.experience_matcher import fetch_experience_contexts, to_uuid_list
 from gencv.skill_grouper import group_skills_for_jd
 from gencv.identity_selector import select_identity_from_jd, select_networks_from_jd
 from gencv.education_selector import select_relevant_degrees
+from gencv.summary_writer import write_summary
 
 
 TEMPLATES_DIR = pathlib.Path(__file__).parent / "templates"
@@ -176,7 +177,7 @@ def build_project_entries(session, claim_ids, description_overrides=None):
     return entries
 
 
-def build_education_entries(session, relevant_degrees): # tyahsin: use project_entries to find the corresponding education_entries
+def build_education_entries(session, relevant_degrees): 
     """把 education_selector.select_relevant_degrees() 選出的 DegreeORM 清單
     直接組成 education section，不再額外篩選。只放
     institution/area/degree/start_date/end_date。排序依 start_date 倒序。"""
@@ -201,7 +202,7 @@ def build_education_entries(session, relevant_degrees): # tyahsin: use project_e
     return entries
 
 
-def build_skill_entries(session, claim_ids, job_description): # tyahsin: to build_skill_entries
+def build_skill_entries(session, claim_ids, job_description):
     """從關聯的標籤中取得 tag_name，交給 skill_grouper.group_skills_for_jd()
     依這份 JD 重新分組（上限4組，含未分類 tag 的互動式指派、以及新增分組的
     互動指令），輸出 rendercv OneLineEntry 清單。
@@ -235,6 +236,23 @@ def build_skill_entries(session, claim_ids, job_description): # tyahsin: to buil
         if tags
     ]
 
+def build_summary_entry(experience_entries, project_entries, education_entries, job_description):
+    """組裝 summary section 所需素材，呼叫 summary_writer 進行 LLM 草擬 + 人工確認。
+
+    (本輪變更) 拿掉原本的 domain/job_function 輔助訊號 -- tag_category 改版
+    成 tool/capability/context 三軸後，舊訊號已無對應資料來源；改用
+    skills_entries 頂替又會跟 skills section 內容重複曝光。權衡之下直接
+    拿掉這個訊號：final_bullets + education_entries 已是履歷資訊量最大的
+    兩塊，輔助訊號本來就是 non-forced 的錦上添花，拿掉不影響 summary 的
+    核心品質，換來簽名更簡單、不必為了一個弱訊號多查一次 DB 或製造重複。
+    """
+    bullets = [
+        h for entry in experience_entries for h in entry.get("highlights", [])
+    ] + [
+        h for entry in project_entries for h in entry.get("highlights", [])
+    ]
+
+    return write_summary(job_description, bullets, education_entries)
 
 def build_cv_pdf_path(name: str, job_title: str, company_name: str) -> pathlib.Path:
     """(v17, replaces build_default_output_path) 依規則組出完整 PDF 輸出路徑：
@@ -273,7 +291,7 @@ def build_cv_yaml(
     designated_name=None,
     headline=None,
     description_overrides=None,
-    summary=None,
+    # summary=None,
 ):
     """(v17, renamed from build_resume_yaml) 組出 rendercv 看得懂的 cv YAML
     （只含 cv: 區塊），寫入 output_path。
@@ -285,7 +303,7 @@ def build_cv_yaml(
     RenderCV 的 TextEntry 寫法）。None 代表使用者選擇省略。
     """
 
-    name, email, phone, location, visa_status = build_identity_entry(job_description, designated_name) # tyahsin: where do I put visa_status?
+    name, email, phone, location, visa_status = build_identity_entry(job_description, designated_name)
     networks_entries = build_network_entries(job_description)
     with get_session() as session:
         experience_entries = build_experience_entries(session, claim_ids, description_overrides)
@@ -293,7 +311,7 @@ def build_cv_yaml(
         relevant_degrees = select_relevant_degrees(session, claim_ids, job_description)
         education_entries = build_education_entries(session, relevant_degrees)
         skills_entries = build_skill_entries(session, claim_ids, job_description)
-        # summary_entry = build_summary_entry(session, experience_entries, project_entries, education_entries, skills_entries, job_description)
+    summary_entry = build_summary_entry(experience_entries, project_entries, education_entries, job_description)
 
     cv_block = {
         "name": name,
@@ -306,8 +324,7 @@ def build_cv_yaml(
         cv_block["social_networks"] = networks_entries
 
     sections = {}
-    if summary:
-        sections["summary"] = [summary]
+    sections["summary"] = [summary_entry]
     sections["education"] = education_entries
     sections["experience"] = experience_entries
     if project_entries:

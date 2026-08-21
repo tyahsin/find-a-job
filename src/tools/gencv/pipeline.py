@@ -67,7 +67,7 @@ import tempfile
 from gencv.experience_matcher import select_claims
 from gencv.claim_ranker import rank_and_narrow_claims
 from gencv.experience_rewriter import rewrite_and_confirm
-from gencv.summary_writer import draft_and_confirm_summary
+# from gencv.summary_writer import draft_and_confirm_summary
 from gencv.resume_builder import build_cv_yaml, render_pdf
 from core.db import get_session, JobORM
 
@@ -104,15 +104,6 @@ def generate_cv(
 
     final_descriptions = rewrite_and_confirm(selected_claim_ids, job_description)
 
-    # with get_session() as session:
-    #     education_entries_for_summary = build_education_entries(session, relevant_degrees)
-
-    # summary = draft_and_confirm_summary(
-    #     job_description,
-    #     list(final_descriptions.values()),
-    #     education_entries_for_summary,
-    # )
-
     with tempfile.TemporaryDirectory() as tmp_dir:
         cv_yaml_path = pathlib.Path(tmp_dir) / "cv.yaml"
         pdf_path = build_cv_yaml(
@@ -124,7 +115,6 @@ def generate_cv(
             designated_name=designated_name,
             headline=headline,
             description_overrides=final_descriptions,          
-            # summary=summary,
         )
         render_pdf(cv_yaml_path=cv_yaml_path, pdf_path=pdf_path)
 
