@@ -1429,7 +1429,7 @@ def add_claims(
         help="UUID of the project to add a claim to. If omitted, an interactive selector is shown.",
     ),
 ):
-    """Interactively add a problem -> action -> claim -> metric(s) -> evidence(s) -> tag(s) -> governance record."""
+    """Bulk add claims to database through source files or URLs."""
     claim_id: Optional[UUID] = None
     evidence_ids: list[UUID] = []
     metric_summaries: list[str] = []
@@ -1507,6 +1507,7 @@ def add_claims(
 
 @app.command("add-project-claims")
 def add_project_claims() -> None:
+    """Bulk add a project and its claims to database through source files or URLs."""
     project_id = add_project()
     add_claims(project_id)
 

@@ -17,6 +17,9 @@ def apply(
         ..., "--jd-file", help="Path to a JD text file (triggers LLM extraction + one-shot confirmation)"
     ),
 ) -> None:
+    """
+    Apply to a job from the beginning (log the job) to the end (log application).
+    """
     job_id = add_job(jd_file=jd_file)
     file_folder = gen_cv(job_id)
     add_application(job_id, file_folder)

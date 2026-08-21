@@ -67,7 +67,6 @@ import tempfile
 from gencv.experience_matcher import select_claims
 from gencv.claim_ranker import rank_and_narrow_claims
 from gencv.experience_rewriter import rewrite_and_confirm
-# from gencv.summary_writer import draft_and_confirm_summary
 from gencv.resume_builder import build_cv_yaml, render_pdf
 from core.db import get_session, JobORM
 
