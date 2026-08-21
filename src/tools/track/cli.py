@@ -75,7 +75,7 @@ from core.llm_reviewer import confirm_fields_once
 app = typer.Typer(help="Collect jobs and track applications.")
 
 
-@app.command("find")
+@app.command("find-job")
 def find_job(
     company_name: str = typer.Option(..., "--company-name", help="Company name"),
     job_title: str = typer.Option(..., "--job-title", help="Job title"),

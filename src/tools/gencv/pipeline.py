@@ -64,10 +64,6 @@ Changelog:
 import pathlib
 import tempfile
 
-from gencv.identity_selector import (
-    select_identity_from_jd,
-    select_networks_from_jd,
-)
 from gencv.education_selector import select_relevant_degrees
 from gencv.experience_matcher import select_claims
 from gencv.claim_ranker import rank_and_narrow_claims
@@ -75,7 +71,7 @@ from gencv.experience_rewriter import rewrite_and_confirm
 from gencv.summary_writer import draft_and_confirm_summary
 from gencv.resume_builder import (
     build_cv_yaml,
-    build_cv_pdf_path,
+    # build_cv_pdf_path,
     build_education_entries,
     fetch_domain_job_function_tags,
     render_pdf,
@@ -87,9 +83,9 @@ from core.db import (
 
 def generate_cv(
     job_id: str,
-    headline: str | None = None,
-    name: str | None = None,
-) -> tuple[pathlib.Path, str]:
+    designated_name: str | None = None,
+    designated_headline: str | None = None,
+) -> pathlib.Path:
     """JD -> PDF 單一入口。
 
     company_name / job_title (v11, new, REQUIRED): 用於組出這次 PDF 的
@@ -97,7 +93,7 @@ def generate_cv(
     {OUTPUT_DIR}/{job_title}_{company_name}/cv_{name}_{job_title}_{company_name}.pdf。
 
     Returns:
-        (PDF 路徑, 該次投遞紀錄的 output_id)
+        PDF 路徑
     """
     with get_session() as session:
         job = session.get(JobORM, job_id)
@@ -107,23 +103,19 @@ def generate_cv(
         company_name = job.company_name
         job_title = job.job_title
 
-    identity = select_identity_from_jd(job_description)
-    networks = select_networks_from_jd(job_description)
-
-    resolved_headline = job_title if headline is None else headline
-    resolved_name = name if name is not None else identity.name
-
-    selected_claim_ids = select_claims(job_description)
+    headline = job_title if designated_headline is None else designated_headline
+        
+    selected_claim_ids = select_claims(job_description) # tyahsin: this will make claims run first by looking
 
     if not selected_claim_ids:
         raise ValueError("篩選後沒有任何經歷通過（可能被治理層擋下，或 LLM 判定皆不相關）。")
 
-    selected_claim_ids = rank_and_narrow_claims(selected_claim_ids, job_description)
+    selected_claim_ids = rank_and_narrow_claims(selected_claim_ids, job_description) # tyahsin: polish
+
+    final_descriptions = rewrite_and_confirm(selected_claim_ids, job_description)
 
     with get_session() as session:
         relevant_degrees = select_relevant_degrees(session, selected_claim_ids, job_description)
-
-    final_descriptions = rewrite_and_confirm(selected_claim_ids, job_description)
 
     with get_session() as session:
         education_entries_for_summary = build_education_entries(session, relevant_degrees)
@@ -133,23 +125,21 @@ def generate_cv(
         job_description,
         list(final_descriptions.values()),
         education_entries_for_summary,
-        domain_job_function_tags=domain_job_function_tags,
+        domain_job_function_tags,
     )
 
-    pdf_path = build_cv_pdf_path(name=resolved_name, job_title=job_title, company_name=company_name)
-
     with tempfile.TemporaryDirectory() as tmp_dir:
-        cv_yaml_path = pathlib.Path(tmp_dir) / "resume_content.yaml"
-        build_cv_yaml(
-            selected_claim_ids,
-            identity,
-            str(cv_yaml_path),
+        cv_yaml_path = pathlib.Path(tmp_dir) / "cv.yaml"
+        pdf_path = build_cv_yaml(
+            company_name=company_name,
+            job_title=job_title,
             job_description=job_description,
-            headline=resolved_headline,
-            networks=networks,
+            claim_ids=selected_claim_ids,
+            output_path=str(cv_yaml_path),
+            designated_name=designated_name,
+            headline=headline,
             relevant_degrees=relevant_degrees,
-            description_overrides=final_descriptions,
-            name=resolved_name,
+            description_overrides=final_descriptions,          
             summary=summary,
         )
         render_pdf(cv_yaml_path=cv_yaml_path, pdf_path=pdf_path)

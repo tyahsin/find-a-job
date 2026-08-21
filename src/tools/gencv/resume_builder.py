@@ -57,8 +57,40 @@ from core.config import get_cv_config
 from core.db import get_session, ClaimMetricORM, ClaimTagORM, TagORM, IdentityORM, NetworkORM, DegreeORM, SchoolORM
 from gencv.experience_matcher import fetch_experience_contexts, to_uuid_list
 from gencv.skill_grouper import group_skills_for_jd
+from gencv.identity_selector import select_identity_from_jd, select_networks_from_jd
+from gencv.experience_matcher import select_claims
+from gencv.claim_ranker import rank_and_narrow_claims
+from gencv.experience_rewriter import rewrite_and_confirm
 
 TEMPLATES_DIR = pathlib.Path(__file__).parent / "templates"
+
+def build_identity_entry(job_description, designated_name=None):
+    identity = select_identity_from_jd(job_description)
+    name = identity.name if designated_name is None else designated_name
+    visa_status = identity.visa_status if 'citizenship' not in str.lower(identity.visa_status) else None
+    return name, identity.email, identity.phone, identity.location, visa_status
+
+def build_network_entries(job_description):
+    networks = select_networks_from_jd(job_description)
+    return [
+        {"network": n.network, "username": n.username}
+        for n in networks
+    ]
+
+# def build_claim_entries(job_description):
+#     """
+#     Optimize the selection of claims and their writings
+#     """
+#     selected_claim_ids = select_claims(job_description) 
+    
+#     if not selected_claim_ids:
+#         raise ValueError("篩選後沒有任何經歷通過（可能被治理層擋下，或 LLM 判定皆不相關）。")
+
+#     selected_claim_ids = rank_and_narrow_claims(selected_claim_ids, job_description)
+
+#     description_override = rewrite_and_confirm(selected_claim_ids, job_description)
+
+#     return selected_claim_ids, description_override
 
 def build_experience_entries(session, claim_ids, description_overrides=None):
     """依 claim_id 清單取得完整背景，篩出 WORK TRACK（is_work_track=True）子集，
@@ -144,7 +176,7 @@ def build_project_entries(session, claim_ids, description_overrides=None):
     return entries
 
 
-def build_education_entries(session, relevant_degrees):
+def build_education_entries(session, relevant_degrees): # tyahsin: use project_entries to find the corresponding education_entries
     """把 education_selector.select_relevant_degrees() 選出的 DegreeORM 清單
     直接組成 education section，不再額外篩選。只放
     institution/area/degree/start_date/end_date。排序依 start_date 倒序。"""
@@ -174,7 +206,7 @@ def build_education_entries(session, relevant_degrees):
     return entries
 
 
-def build_skills_section(session, claim_ids, job_description):
+def build_skill_entries(session, claim_ids, job_description): # tyahsin: to build_skill_entries
     """從關聯的標籤中取得 tag_name，交給 skill_grouper.group_skills_for_jd()
     依這份 JD 重新分組（上限4組，含未分類 tag 的互動式指派、以及新增分組的
     互動指令），輸出 rendercv OneLineEntry 清單。
@@ -239,83 +271,6 @@ def fetch_domain_job_function_tags(session, claim_ids):
     return result
 
 
-def build_social_networks_section(networks):
-    """把 NetworkORM 清單轉成 rendercv SocialNetwork 清單（network/username 欄位）。"""
-    return [
-        {"network": n.network, "username": n.username}
-        for n in networks
-    ]
-
-
-def build_cv_yaml(
-    claim_ids,
-    identity,
-    output_path,
-    job_description,
-    headline=None,
-    networks=None,
-    relevant_degrees=None,
-    description_overrides=None,
-    name=None,
-    summary=None,
-):
-    """(v17, renamed from build_resume_yaml) 組出 rendercv 看得懂的 cv YAML
-    （只含 cv: 區塊），寫入 output_path。
-
-    job_description 為必填參數 -- build_skills_section() 需要它來做
-    JD-specific 的 skill 分組（僅 tag_category == "skill" 的 tag）。
-
-    summary 為選填的履歷開場摘要，寫進 sections["summary"]（單元素字串 list，
-    RenderCV 的 TextEntry 寫法）。None 代表使用者選擇省略。
-    """
-    networks = networks or []
-    relevant_degrees = relevant_degrees or []
-
-    with get_session() as session:
-        experience_entries = build_experience_entries(session, claim_ids, description_overrides)
-        project_entries = build_project_entries(session, claim_ids, description_overrides)
-        education_entries = build_education_entries(session, relevant_degrees)
-        skills_entries = build_skills_section(session, claim_ids, job_description)
-
-    cv_block = {
-        "name": name if name is not None else identity.name,
-        "email": identity.email,
-    }
-    if headline:
-        cv_block["headline"] = headline
-    if identity.phone:
-        cv_block["phone"] = identity.phone
-    if identity.location:
-        cv_block["location"] = identity.location
-
-    social_networks_entries = build_social_networks_section(networks)
-    if social_networks_entries:
-        cv_block["social_networks"] = social_networks_entries
-
-    sections = {}
-    if summary:
-        sections["summary"] = [summary]
-    sections["education"] = education_entries
-    if project_entries:
-        sections["projects"] = project_entries
-    sections["experience"] = experience_entries
-    sections["skills"] = skills_entries
-
-    cv_block["sections"] = sections
-
-    resume_content = {"cv": cv_block}
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(resume_content, f, allow_unicode=True, sort_keys=False)
-
-    print(
-        f"Generated {output_path} with {len(experience_entries)} experience entries, "
-        f"{len(project_entries)} project entries, and {len(education_entries)} education entries."
-    )
-
-    return output_path
-
-
 def build_cv_pdf_path(name: str, job_title: str, company_name: str) -> pathlib.Path:
     """(v17, replaces build_default_output_path) 依規則組出完整 PDF 輸出路徑：
 
@@ -342,6 +297,72 @@ def build_cv_pdf_path(name: str, job_title: str, company_name: str) -> pathlib.P
     folder = cv_config.output_dir / f"{safe_job_title}_{safe_company}"
     filename = f"cv_{safe_name}_{safe_job_title}_{safe_company}.pdf"
     return folder / filename
+
+
+def build_cv_yaml( # tyahsin: consolidation should happen here
+    company_name,
+    job_title,
+    job_description,
+    claim_ids,
+    output_path,
+    designated_name=None,
+    headline=None,
+    relevant_degrees=None,
+    description_overrides=None,
+    summary=None,
+):
+    """(v17, renamed from build_resume_yaml) 組出 rendercv 看得懂的 cv YAML
+    （只含 cv: 區塊），寫入 output_path。
+
+    job_description 為必填參數 -- build_skills_section() 需要它來做
+    JD-specific 的 skill 分組（僅 tag_category == "skill" 的 tag）。
+
+    summary 為選填的履歷開場摘要，寫進 sections["summary"]（單元素字串 list，
+    RenderCV 的 TextEntry 寫法）。None 代表使用者選擇省略。
+    """
+
+    # relevant_degrees = relevant_degrees or []
+
+    name, email, phone, location, visa_status = build_identity_entry(job_description, designated_name) # tyahsin: where do I put visa_status?
+    networks_entries = build_network_entries(job_description)
+    with get_session() as session:
+        experience_entries = build_experience_entries(session, claim_ids, description_overrides)
+        project_entries = build_project_entries(session, claim_ids, description_overrides)
+        education_entries = build_education_entries(session, relevant_degrees)
+        skills_entries = build_skill_entries(session, claim_ids, job_description)
+
+    cv_block = {
+        "name": name,
+        "headline": f"{headline}" if visa_status is None else f"{headline} ({visa_status})",
+        "email": email,
+        "phone": phone,
+        "location": location,
+    }
+    if networks_entries:
+        cv_block["social_networks"] = networks_entries
+
+    sections = {}
+    if summary:
+        sections["summary"] = [summary]
+    sections["education"] = education_entries
+    if project_entries:
+        sections["projects"] = project_entries
+    sections["experience"] = experience_entries
+    sections["skills"] = skills_entries
+
+    cv_block["sections"] = sections
+
+    cv_content = {"cv": cv_block}
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cv_content, f, allow_unicode=True, sort_keys=False)
+
+    print(
+        f"Generated {output_path} with {len(experience_entries)} experience entries, "
+        f"{len(project_entries)} project entries" #, and {len(education_entries)} education entries."
+    )
+
+    return build_cv_pdf_path(name, job_title, company_name)
 
 
 def render_pdf(

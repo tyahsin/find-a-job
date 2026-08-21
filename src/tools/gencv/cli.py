@@ -60,9 +60,9 @@ def generate_cv(
     """Select relevant experiences -> confirm rewrites -> render to PDF -> log the application."""
 
     pdf_path = gen_cv(
-        job_id=job_id,
-        headline=headline,
-        name=name,
+        job_id,
+        headline,
+        name,
     )
     typer.secho(f"CV generated: {str(pdf_path)}", fg=typer.colors.GREEN)
     return pdf_path.parent
