@@ -110,7 +110,7 @@ def generate_cv(
     if not selected_claim_ids:
         raise ValueError("篩選後沒有任何經歷通過（可能被治理層擋下，或 LLM 判定皆不相關）。")
 
-    selected_claim_ids = rank_and_narrow_claims(selected_claim_ids, job_description) # tyahsin: polish
+    selected_claim_ids = rank_and_narrow_claims(selected_claim_ids, job_description) 
 
     final_descriptions = rewrite_and_confirm(selected_claim_ids, job_description)
 

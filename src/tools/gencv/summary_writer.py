@@ -87,7 +87,8 @@ Strict rules (must follow):
 5. Write in active voice, third person is not used -- write as a direct,
    resume-style summary.
 6. HARD LIMIT: the summary must be AT MOST 3 sentences. Prefer 2
-   sentences when 2 are sufficient -- do not pad to reach 3.
+   sentences when 2 are sufficient -- do not pad to reach 3. The word count
+   should be less than 45 words.
 7. No filler words, no generic claims not backed by the given material.
 8. Output must be in English, regardless of the input language.
 9. (v3) If you are given a REGENERATION STEERING NOTE, treat it as an

@@ -323,7 +323,7 @@ def select_claims(job_description: str) -> list[str]:
             temperature=0.0,
             max_tokens=1000,
         )
-        # print(response)
+        
     relevant_indices = _parse_relevant_indices(response.text)
     selected_ids = [
         index_to_claim_id[i] for i in relevant_indices if i in index_to_claim_id

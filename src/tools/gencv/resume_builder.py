@@ -54,7 +54,7 @@ from collections import defaultdict
 import yaml
 
 from core.config import get_cv_config
-from core.db import get_session, ClaimMetricORM, ClaimTagORM, TagORM, IdentityORM, NetworkORM, DegreeORM, SchoolORM
+from core.db import get_session, ClaimMetricORM, ClaimTagORM, TagORM, IdentityORM, NetworkORM, DegreeORM, CompanyORM, SchoolORM
 from gencv.experience_matcher import fetch_experience_contexts, to_uuid_list
 from gencv.skill_grouper import group_skills_for_jd
 from gencv.identity_selector import select_identity_from_jd, select_networks_from_jd
@@ -127,6 +127,7 @@ def build_experience_entries(session, claim_ids, description_overrides=None):
         entry = {
             "company": org_name,
             "position": title,
+            "location": session.query(CompanyORM.location).filter(CompanyORM.company_name == org_name).scalar(),
             "highlights": highlights,
         }
         if start_date:
@@ -156,15 +157,16 @@ def build_project_entries(session, claim_ids, description_overrides=None):
         ctx = contexts.get(claim_id)
         if not ctx:
             continue
-        key = (ctx["project_name"], ctx["start_date"], ctx["end_date"])
+        key = (ctx["project_name"], ctx["start_date"], ctx["end_date"], ctx["project_context"])
         highlight = description_overrides.get(claim_id, ctx["claim_description"])
         grouped[key].append(highlight)
         meta[key] = ctx
 
     entries = []
-    for (project_name, start_date, end_date), highlights in grouped.items():
+    for (project_name, start_date, end_date, project_context), highlights in grouped.items():
         entry = {
             "name": project_name,
+            "summary": project_context,
             "highlights": highlights,
         }
         if start_date:
