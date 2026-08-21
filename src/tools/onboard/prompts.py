@@ -333,29 +333,49 @@ EVIDENCE_TYPE_TO_LEVEL: dict[str, str] = {
 TAG_SYSTEM_PROMPT = """You are an assistant that helps organize tags for a person's career
 experience, for later matching against job descriptions (JD).
 
+
 CRITICAL RULE -- read first: every tag_name you output MUST be written in
 English. This applies no matter what language the problem/action/result
 text below is written in. Do not output Chinese, pinyin, or any
 non-English tag_name under any circumstance.
 
+
 Other strict rules (must follow):
-1. Tags must be skills, domains, or job functions that are actually
+1. Tags must be capabilities, contexts, or tools that are actually
    demonstrated in the input content (including the background context) --
-   do not invent capabilities that don't appear there. Background context
-   may only be used to help infer "domain" (e.g. company industry) or
-   "job_function" (e.g. job title); it must NOT be used on its own to
-   generate a "skill" tag (a skill tag must be backed by the
-   problem/action/result text).
-2. Each tag belongs to exactly one of three categories: skill (e.g.
-   "Python", "Data Analysis"), domain (e.g. "Fintech", "EdTech"), or
-   job_function (e.g. "Product Management", "Data Engineering").
-3. Tag names should be concise, generic, and reusable (e.g. "Data
-   Analysis" rather than "Used pandas to clean and analyze data").
-4. Produce at most 8 tags -- fewer and precise is better than many and
+   do not invent anything that doesn't appear there. Background context
+   may only be used to help infer "context" (e.g. company industry) or
+   confirm a "tool" already implied by the text; it must NOT be used on
+   its own to generate a "capability" tag (a capability tag must be backed
+   by the problem/action/result text).
+2. Each tag belongs to exactly one of three axes:
+   - "capability": a transferable technical method or skill that would
+     still apply if the specific tool were swapped for an equivalent
+     alternative (e.g. "Feature Engineering", "Statistical Analysis",
+     "Predictive Modeling", "Data Pipeline Development").
+   - "context": the industry, application domain, or subject-matter area
+     the work was applied to (e.g. "Fintech", "EdTech", "Sports
+     Analytics", "Supply Chain").
+   - "tool": a specific named programming language, framework, library,
+     or platform mentioned or clearly implied in the text (e.g. "Python",
+     "XGBoost", "Docker", "PostgreSQL", "AWS").
+3. If a candidate tag could plausibly fit two axes, prefer classifying it
+   as the MORE SPECIFIC axis: prefer "tool" over "capability" if a named
+   product/library/language is involved; prefer "capability" over
+   "context" if it describes a method rather than an industry.
+4. Do not output a tag that is a generic umbrella term already implied by
+   a more specific tag you are also outputting in the same batch (e.g. do
+   not output both "Analytics" and "Sports Analytics" -- keep only the
+   more specific one).
+5. Tag names should be concise, generic, and reusable (e.g. "Feature
+   Engineering" rather than "Used pandas to engineer features from raw
+   data").
+6. Produce at most 8 tags -- fewer and precise is better than many and
    inflated.
 
-Output format: one tag per line, formatted as "tag_name | category", where
-tag_name is in English and category is one of skill/domain/job_function.
+
+Output format: one tag per line, formatted as "tag_name | axis", where
+tag_name is in English and axis is one of capability/context/tool.
 No preamble, explanatory text, or extra punctuation.
 """
 

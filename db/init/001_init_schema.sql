@@ -146,7 +146,7 @@ CREATE TABLE tag (
     tag_name TEXT UNIQUE NOT NULL, -- 標準寫法，唯一
     tag_category TEXT NOT NULL CHECK (
         tag_category IN ('skill', 'domain', 'job_function')
-    ), -- 可轉移的能力, 產業領域知識, 職能類別
+    ),
     aliases TEXT[] DEFAULT '{}', -- 同義詞/其他措辭，供 fuzzy match 比對用
     created_at TIMESTAMP DEFAULT now(),
     updated_at TIMESTAMP
