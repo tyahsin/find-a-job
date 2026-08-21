@@ -909,6 +909,7 @@ def add_project() -> None:
         # governance rows never exist for anything but claims.
 
     console.print(f"[green]Done! New project ID: {project_id}[/green]")
+    return project_id
 
 # ---------------------------------------------------------------------------
 # add-claim: interactive project selector (flat, join-based, single menu --
@@ -1504,6 +1505,10 @@ def add_claims(
                 console.print(f"[green]Tags: {', '.join(tag_names)}[/green]")
             console.print("[green]Governance support_level: computed and filled in.[/green]")
 
+@app.command("add-project-claims")
+def add_project_claims() -> None:
+    project_id = add_project()
+    add_claims(project_id)
 
 if __name__ == "__main__":
     app()

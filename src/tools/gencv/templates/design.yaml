@@ -98,8 +98,8 @@ design:
     one_line_entry:
       main_column: '**LABEL:** DETAILS'
     education_entry:
-      main_column: |-
-        **DEGREE_WITH_AREA**, INSTITUTION -- *LOCATION*
+      main_column: |- # DEGREE_WITH_AREA
+        **AREA**, INSTITUTION -- *LOCATION* 
         SUMMARY
         HIGHLIGHTS
       degree_column: '**DEGREE**'
