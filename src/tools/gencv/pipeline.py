@@ -64,22 +64,12 @@ Changelog:
 import pathlib
 import tempfile
 
-from gencv.education_selector import select_relevant_degrees
 from gencv.experience_matcher import select_claims
 from gencv.claim_ranker import rank_and_narrow_claims
 from gencv.experience_rewriter import rewrite_and_confirm
 from gencv.summary_writer import draft_and_confirm_summary
-from gencv.resume_builder import (
-    build_cv_yaml,
-    # build_cv_pdf_path,
-    build_education_entries,
-    # fetch_domain_job_function_tags,
-    render_pdf,
-)
-from core.db import (
-    get_session,
-    JobORM,
-)
+from gencv.resume_builder import build_cv_yaml, render_pdf
+from core.db import get_session, JobORM
 
 def generate_cv(
     job_id: str,
@@ -105,7 +95,7 @@ def generate_cv(
 
     headline = job_title if designated_headline is None else designated_headline
         
-    selected_claim_ids = select_claims(job_description) # tyahsin: this will make claims run first by looking
+    selected_claim_ids = select_claims(job_description)
 
     if not selected_claim_ids:
         raise ValueError("篩選後沒有任何經歷通過（可能被治理層擋下，或 LLM 判定皆不相關）。")
@@ -114,19 +104,14 @@ def generate_cv(
 
     final_descriptions = rewrite_and_confirm(selected_claim_ids, job_description)
 
-    with get_session() as session:
-        relevant_degrees = select_relevant_degrees(session, selected_claim_ids, job_description)
+    # with get_session() as session:
+    #     education_entries_for_summary = build_education_entries(session, relevant_degrees)
 
-    with get_session() as session:
-        education_entries_for_summary = build_education_entries(session, relevant_degrees)
-        # domain_job_function_tags = fetch_domain_job_function_tags(session, selected_claim_ids)
-
-    summary = draft_and_confirm_summary(
-        job_description,
-        list(final_descriptions.values()),
-        education_entries_for_summary,
-        # domain_job_function_tags,
-    )
+    # summary = draft_and_confirm_summary(
+    #     job_description,
+    #     list(final_descriptions.values()),
+    #     education_entries_for_summary,
+    # )
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         cv_yaml_path = pathlib.Path(tmp_dir) / "cv.yaml"
@@ -138,9 +123,8 @@ def generate_cv(
             output_path=str(cv_yaml_path),
             designated_name=designated_name,
             headline=headline,
-            relevant_degrees=relevant_degrees,
             description_overrides=final_descriptions,          
-            summary=summary,
+            # summary=summary,
         )
         render_pdf(cv_yaml_path=cv_yaml_path, pdf_path=pdf_path)
 

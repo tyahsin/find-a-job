@@ -58,9 +58,8 @@ from core.db import get_session, ClaimMetricORM, ClaimTagORM, TagORM, ClaimORM, 
 from gencv.experience_matcher import fetch_experience_contexts, to_uuid_list
 from gencv.skill_grouper import group_skills_for_jd
 from gencv.identity_selector import select_identity_from_jd, select_networks_from_jd
-from gencv.experience_matcher import select_claims
-from gencv.claim_ranker import rank_and_narrow_claims
-from gencv.experience_rewriter import rewrite_and_confirm
+from gencv.education_selector import select_relevant_degrees
+
 
 TEMPLATES_DIR = pathlib.Path(__file__).parent / "templates"
 
@@ -76,21 +75,6 @@ def build_network_entries(job_description):
         {"network": n.network, "username": n.username}
         for n in networks
     ]
-
-# def build_claim_entries(job_description):
-#     """
-#     Optimize the selection of claims and their writings
-#     """
-#     selected_claim_ids = select_claims(job_description) 
-    
-#     if not selected_claim_ids:
-#         raise ValueError("篩選後沒有任何經歷通過（可能被治理層擋下，或 LLM 判定皆不相關）。")
-
-#     selected_claim_ids = rank_and_narrow_claims(selected_claim_ids, job_description)
-
-#     description_override = rewrite_and_confirm(selected_claim_ids, job_description)
-
-#     return selected_claim_ids, description_override
 
 def build_experience_entries(session, claim_ids, description_overrides=None):
     """依 claim_id 清單取得完整背景，篩出 WORK TRACK（is_work_track=True）子集，
@@ -229,7 +213,7 @@ def build_skill_entries(session, claim_ids, job_description): # tyahsin: to buil
         session.query(TagORM)
         .join(ClaimTagORM, ClaimTagORM.tag_id == TagORM.tag_id)
         .filter(ClaimTagORM.claim_id.in_(to_uuid_list(claim_ids)))
-        .filter(TagORM.tag_category.in_(["tool", "capability"]))
+        .filter(TagORM.tag_category.in_(["tool", "capability"])) # tyahsin: need some re-thinking
         .all()
     )
 
@@ -250,32 +234,6 @@ def build_skill_entries(session, claim_ids, job_description): # tyahsin: to buil
         for label, tags in grouping.items()
         if tags
     ]
-
-
-# def fetch_domain_job_function_tags(session, claim_ids):
-#     """撈出 claim_ids 關聯到的 domain / job_function 類 tag_name
-#     清單（去重），供 pipeline.py 傳給
-#     summary_writer.draft_and_confirm_summary() 當輔助訊號使用。與
-#     build_skills_section() 互斥 -- 該函式只處理 tag_category == "skill"，
-#     這裡處理另外兩類，兩者合起來剛好覆蓋全部 tag_category，不重疊。"""
-#     if not claim_ids:
-#         return []
-
-#     tag_rows = (
-#         session.query(TagORM)
-#         .join(ClaimTagORM, ClaimTagORM.tag_id == TagORM.tag_id)
-#         .filter(ClaimTagORM.claim_id.in_(to_uuid_list(claim_ids)))
-#         .filter(TagORM.tag_category.in_(["domain", "job_function"]))
-#         .all()
-#     )
-
-#     seen = set()
-#     result = []
-#     for tag in tag_rows:
-#         if tag.tag_name not in seen:
-#             seen.add(tag.tag_name)
-#             result.append(tag.tag_name)
-#     return result
 
 
 def build_cv_pdf_path(name: str, job_title: str, company_name: str) -> pathlib.Path:
@@ -306,7 +264,7 @@ def build_cv_pdf_path(name: str, job_title: str, company_name: str) -> pathlib.P
     return folder / filename
 
 
-def build_cv_yaml( # tyahsin: consolidation should happen here
+def build_cv_yaml(
     company_name,
     job_title,
     job_description,
@@ -314,7 +272,6 @@ def build_cv_yaml( # tyahsin: consolidation should happen here
     output_path,
     designated_name=None,
     headline=None,
-    relevant_degrees=None,
     description_overrides=None,
     summary=None,
 ):
@@ -328,15 +285,15 @@ def build_cv_yaml( # tyahsin: consolidation should happen here
     RenderCV 的 TextEntry 寫法）。None 代表使用者選擇省略。
     """
 
-    # relevant_degrees = relevant_degrees or []
-
     name, email, phone, location, visa_status = build_identity_entry(job_description, designated_name) # tyahsin: where do I put visa_status?
     networks_entries = build_network_entries(job_description)
     with get_session() as session:
         experience_entries = build_experience_entries(session, claim_ids, description_overrides)
         project_entries = build_project_entries(session, claim_ids, description_overrides)
+        relevant_degrees = select_relevant_degrees(session, claim_ids, job_description)
         education_entries = build_education_entries(session, relevant_degrees)
         skills_entries = build_skill_entries(session, claim_ids, job_description)
+        # summary_entry = build_summary_entry(session, experience_entries, project_entries, education_entries, skills_entries, job_description)
 
     cv_block = {
         "name": name,
