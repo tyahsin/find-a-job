@@ -54,7 +54,7 @@ from collections import defaultdict
 import yaml
 
 from core.config import get_cv_config
-from core.db import get_session, ClaimMetricORM, ClaimTagORM, TagORM, IdentityORM, NetworkORM, DegreeORM, CompanyORM, SchoolORM
+from core.db import get_session, ClaimMetricORM, ClaimTagORM, TagORM, ClaimORM, ActionORM, ProblemORM, ProjectORM, CompanyORM, SchoolORM
 from gencv.experience_matcher import fetch_experience_contexts, to_uuid_list
 from gencv.skill_grouper import group_skills_for_jd
 from gencv.identity_selector import select_identity_from_jd, select_networks_from_jd
@@ -151,21 +151,35 @@ def build_project_entries(session, claim_ids, description_overrides=None):
         return []
 
     grouped = defaultdict(list)
-    meta = {}
 
     for claim_id in project_claim_ids:
         ctx = contexts.get(claim_id)
         if not ctx:
             continue
-        key = (ctx["project_name"], ctx["start_date"], ctx["end_date"], ctx["project_context"])
+
+        tag_rows = (
+                session.query(TagORM)
+                .join(ClaimTagORM, ClaimTagORM.tag_id == TagORM.tag_id)
+                .join(ClaimORM, ClaimORM.claim_id == ClaimTagORM.claim_id)
+                .join(ActionORM, ActionORM.action_id == ClaimORM.action_id)
+                .join(ProblemORM, ProblemORM.problem_id == ActionORM.problem_id)
+                .join(ProjectORM, ProjectORM.project_id == ProblemORM.project_id)
+                .filter(ProjectORM.project_name==ctx["project_name"])
+                .filter(TagORM.tag_category == "tool")
+                .all()
+            )
+        tools = ', '.join([tag.tag_name for i, tag in enumerate(tag_rows) if i < 3])
+        
+        key = (ctx["project_name"], ctx["start_date"], ctx["end_date"], ctx["project_context"], tools)
         highlight = description_overrides.get(claim_id, ctx["claim_description"])
+
         grouped[key].append(highlight)
-        meta[key] = ctx
 
     entries = []
-    for (project_name, start_date, end_date, project_context), highlights in grouped.items():
+    for (project_name, start_date, end_date, project_context, tools), highlights in grouped.items():
         entry = {
             "name": project_name,
+            "tools": tools,
             "summary": project_context,
             "highlights": highlights,
         }
@@ -207,10 +221,6 @@ def build_skill_entries(session, claim_ids, job_description): # tyahsin: to buil
     """從關聯的標籤中取得 tag_name，交給 skill_grouper.group_skills_for_jd()
     依這份 JD 重新分組（上限4組，含未分類 tag 的互動式指派、以及新增分組的
     互動指令），輸出 rendercv OneLineEntry 清單。
-
-    只撈 tag_category == "skill" 的 tag -- domain / job_function
-    類 tag 已改由 summary_writer.py 的 domain_job_function_tags 參數處理
-    （見 fetch_domain_job_function_tags()），不再進入 skills section。
     """
     if not claim_ids:
         return []
@@ -219,7 +229,7 @@ def build_skill_entries(session, claim_ids, job_description): # tyahsin: to buil
         session.query(TagORM)
         .join(ClaimTagORM, ClaimTagORM.tag_id == TagORM.tag_id)
         .filter(ClaimTagORM.claim_id.in_(to_uuid_list(claim_ids)))
-        .filter(TagORM.tag_category == "skill")
+        .filter(TagORM.tag_category.in_(["tool", "capability"]))
         .all()
     )
 
@@ -242,30 +252,30 @@ def build_skill_entries(session, claim_ids, job_description): # tyahsin: to buil
     ]
 
 
-def fetch_domain_job_function_tags(session, claim_ids):
-    """撈出 claim_ids 關聯到的 domain / job_function 類 tag_name
-    清單（去重），供 pipeline.py 傳給
-    summary_writer.draft_and_confirm_summary() 當輔助訊號使用。與
-    build_skills_section() 互斥 -- 該函式只處理 tag_category == "skill"，
-    這裡處理另外兩類，兩者合起來剛好覆蓋全部 tag_category，不重疊。"""
-    if not claim_ids:
-        return []
+# def fetch_domain_job_function_tags(session, claim_ids):
+#     """撈出 claim_ids 關聯到的 domain / job_function 類 tag_name
+#     清單（去重），供 pipeline.py 傳給
+#     summary_writer.draft_and_confirm_summary() 當輔助訊號使用。與
+#     build_skills_section() 互斥 -- 該函式只處理 tag_category == "skill"，
+#     這裡處理另外兩類，兩者合起來剛好覆蓋全部 tag_category，不重疊。"""
+#     if not claim_ids:
+#         return []
 
-    tag_rows = (
-        session.query(TagORM)
-        .join(ClaimTagORM, ClaimTagORM.tag_id == TagORM.tag_id)
-        .filter(ClaimTagORM.claim_id.in_(to_uuid_list(claim_ids)))
-        .filter(TagORM.tag_category.in_(["domain", "job_function"]))
-        .all()
-    )
+#     tag_rows = (
+#         session.query(TagORM)
+#         .join(ClaimTagORM, ClaimTagORM.tag_id == TagORM.tag_id)
+#         .filter(ClaimTagORM.claim_id.in_(to_uuid_list(claim_ids)))
+#         .filter(TagORM.tag_category.in_(["domain", "job_function"]))
+#         .all()
+#     )
 
-    seen = set()
-    result = []
-    for tag in tag_rows:
-        if tag.tag_name not in seen:
-            seen.add(tag.tag_name)
-            result.append(tag.tag_name)
-    return result
+#     seen = set()
+#     result = []
+#     for tag in tag_rows:
+#         if tag.tag_name not in seen:
+#             seen.add(tag.tag_name)
+#             result.append(tag.tag_name)
+#     return result
 
 
 def build_cv_pdf_path(name: str, job_title: str, company_name: str) -> pathlib.Path:

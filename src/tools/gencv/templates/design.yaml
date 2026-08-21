@@ -90,17 +90,17 @@ design:
   #     space_between_items: 0cm
   #     space_between_bullet_and_text: 0.5em
   templates:
-  #   footer: '*NAME -- PAGE_NUMBER/TOTAL_PAGES*'
+    footer: '' #'*NAME -- PAGE_NUMBER/TOTAL_PAGES*'
   #   top_note: '*LAST_UPDATED CURRENT_DATE*'
   #   single_date: MONTH_ABBREVIATION YEAR
   #   date_range: START_DATE – END_DATE
   #   time_span: ''
-  #   one_line_entry:
-  #     main_column: '**LABEL:** DETAILS'
+    one_line_entry:
+      main_column: '**LABEL:** DETAILS'
     education_entry:
       main_column: |-
         **DEGREE_WITH_AREA**, INSTITUTION -- *LOCATION*
-        # SUMMARY
+        SUMMARY
         HIGHLIGHTS
       degree_column: '**DEGREE**'
       date_and_location_column: END_DATE

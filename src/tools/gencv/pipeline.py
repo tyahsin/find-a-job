@@ -73,7 +73,7 @@ from gencv.resume_builder import (
     build_cv_yaml,
     # build_cv_pdf_path,
     build_education_entries,
-    fetch_domain_job_function_tags,
+    # fetch_domain_job_function_tags,
     render_pdf,
 )
 from core.db import (
@@ -119,13 +119,13 @@ def generate_cv(
 
     with get_session() as session:
         education_entries_for_summary = build_education_entries(session, relevant_degrees)
-        domain_job_function_tags = fetch_domain_job_function_tags(session, selected_claim_ids)
+        # domain_job_function_tags = fetch_domain_job_function_tags(session, selected_claim_ids)
 
     summary = draft_and_confirm_summary(
         job_description,
         list(final_descriptions.values()),
         education_entries_for_summary,
-        domain_job_function_tags,
+        # domain_job_function_tags,
     )
 
     with tempfile.TemporaryDirectory() as tmp_dir:
