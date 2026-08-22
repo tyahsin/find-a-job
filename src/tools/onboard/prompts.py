@@ -89,7 +89,7 @@ Purpose of this summary: describe the scope of responsibilities the user
 held during a given position (position.responsibility). It should be an
 objective description of duties, not an achievement narrative (achievements
 are handled separately elsewhere).
-Suggested length: 2-4 sentences.
+Suggested length: 2 sentences at most and less than 25 words.
 """
 
 
@@ -135,7 +135,7 @@ DEGREE_DESCRIPTION_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
 Purpose of this summary: describe the scope/focus of a degree program
 (degree.degree_description). This should be an objective description of
 what the program covered or focused on, not an achievement narrative.
-Stress more on the curriculum where  
+Stress more on the curriculum and learning outcome with keywords of the area of study.
 Suggested length: 2 sentences at most and less than 25 words.
 """
 
@@ -180,7 +180,7 @@ Purpose of this summary: describe the background/context in which a
 project arose (project.project_context) -- what situation produced this
 project and what kind of project it is. This is NOT an outcome narrative
 (outcomes are handled separately via problem/action/result_claim).
-Suggested length: 1-3 sentences.
+Suggested length: 2 sentences at most and less than 25 words.
 """
 
 def build_project_context_prompt_from_source(source_text: str) -> str:
@@ -506,11 +506,8 @@ is written in.
 Other strict rules (must follow):
 1. Only extract numbers/quantified statements explicitly present in the
    text -- do not guess, estimate, or invent data not written in the text.
-2. Output three fields per metric: type, label, value.
-   - type must be exactly one of: "Efficiency Improvement", "Cost Saving",
-     "Quality Improvement", or "Other" -- use "Other" if it doesn't fit the
-     first three. Do not translate or reword these four labels.
-   - label: what the number actually represents (e.g. "processing time",
+2. Output two fields per metric: description, value.
+   - description: what the number actually represents (e.g. "processing time",
      "customer satisfaction"), described concisely, in English.
    - value: keep the original number/description intact but in English
      (e.g. "reduced from 5 days to 2 days", "about 15%").
@@ -533,25 +530,22 @@ Extract all quantifiable metrics from it. Remember: type/label/value must
 all be in English (format: type|label|value):"""
 
 
-def parse_metric_response(raw_text: str) -> list[tuple[str, str, str]]:
+def parse_metric_response(raw_text: str) -> list[tuple[str, str]]:
     """
-    Parses lines like "Efficiency Improvement|processing time|reduced from
-    5 days to 2 days" into (metric_type, metric_label, metric_value)
+    Parses lines like "processing time|reduced from
+    5 days to 2 days" into (metric_label, metric_value)
     tuples. Skips malformed lines rather than raising, since this is an
     LLM draft the user reviews anyway.
     """
-    valid_types = {"Efficiency Improvement", "Cost Saving", "Quality Improvement", "Other"}
-    results: list[tuple[str, str, str]] = []
+    results: list[tuple[str, str]] = []
     for line in raw_text.strip().splitlines():
         line = line.strip()
-        if not line or line.count("|") != 2:
+        if not line or line.count("|") != 1:
             continue
-        metric_type, metric_label, metric_value = (
+        metric_description, metric_value = (
             part.strip() for part in line.split("|")
         )
-        if metric_type not in valid_types or not metric_label or not metric_value:
-            continue
-        results.append((metric_type, metric_label, metric_value))
+        results.append((metric_description, metric_value))
     return results
 
 
@@ -597,7 +591,6 @@ Output a list of JSON arrays. Each element must match this schema exactly:
 {
     "problem_description": "the gap between expected and actual state before the action, or null if not stated in source",
     "stakeholder_impact": "who was affected and how significantly, or null if not stated in source",
-    "baseline_metric": "measurable state before the action, or null if not stated in source",
     "action_description": "what was concretely done, action-verb start",
     "role_scope": "Led" | "Collaborated" | "Supported",
     "claim_description": "the result narrating how the problem is solved through the action, action-verb start"
@@ -609,7 +602,7 @@ JSON array.
 
 
 Lenght contraint: action_description and claim_description are 15-30 words
-each. problem_description, stakeholder_impact, and baseline_metric are
+each. problem_description, and stakeholder_impact are
 concise (under 20 words) or null when not stated in source.
 
 Output constraint: extract at most 8 claims per call. If the source text

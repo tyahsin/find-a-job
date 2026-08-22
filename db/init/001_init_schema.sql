@@ -88,7 +88,6 @@ CREATE TABLE problem (
     project_id UUID REFERENCES project(project_id), /* 對應哪個專案，而非公司或職位本身 */
     problem_description TEXT, /* 問題描述：應然與實然的落差 */
     stakeholder_impact TEXT, /* 這個落差影響誰、影響多大 */
-    baseline_metric TEXT /* 問題發生前的現況指標 */ 
 );
 
 -- 行動層
@@ -110,12 +109,12 @@ CREATE TABLE claim (
 -- 都能歸類到單一 value_type，因此拆成獨立子表 (one-to-many)。
 -- metric_confidence 一律由使用者人工判定，不採用 LLM 自報信心（LLM 自報
 -- 信心分數普遍缺乏校準，不可靠）。
-CREATE TABLE claim_metric (
+CREATE TABLE metric (
     metric_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     claim_id UUID REFERENCES claim(claim_id), /* 對應哪條結果聲稱 */
-    metric_type TEXT, /* 效率提升 / 成本節省 / 品質改善 / 其他 */
-    metric_label TEXT, /* 這個數字代表什麼，例如「處理時間」「客戶滿意度」 */ /*tyahsin: pretty redundant*/
-    metric_value TEXT, /* 數值本身，含單位/描述，例如「從5天降到2天」「約15%」 */
+    metric_description TEXT, /* 這個數字代表什麼，例如「處理時間」「客戶滿意度」 */
+    metric_before TEXT /* 問題發生前的現況指標 */ 
+    metric_after TEXT, /* 數值本身，含單位/描述，例如「從5天降到2天」「約15%」 */
     metric_confidence TEXT /* 精確 / 估算 / 大致印象 -- 一律人工判定 */
 );
 
@@ -159,19 +158,19 @@ CREATE TABLE claim_tag (
     PRIMARY KEY (claim_id, tag_id)
 );
 
--- 向量索引層（供 pgvector 使用）
-CREATE TABLE claim_chunks ( /* 這段文字語意上跟 JD 有多相似 */
-    chunk_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    claim_id UUID REFERENCES claim(claim_id),
-    support_level TEXT, /* 一筆claim可能有多筆evidence; 用support_level做加總平均 */
-    content TEXT, /* 這段文字語意上跟 JD 有多相似 */
-    embedding VECTOR(1536) /* pgvector 相似度搜尋的核心資料 */ /* tyahsin: why 1536? */
-); /* tyahsin: what is the best structure for a pgvector-oriened table? */
-/* tyahsin: 建議做法是 onboard 時仍生成一組「基礎/廣義」tags 作為預設候選（方便一般檢索與瀏覽），
-CV generation 時再讓 LLM 針對特定 JD 做「措辭轉譯」而非從零生成，這樣既保留了你要的靈活性，
-也避免每次都要從無到有分析整條 claim 全文的成本浪費*/
+-- -- 向量索引層（供 pgvector 使用）
+-- CREATE TABLE claim_chunks ( /* 這段文字語意上跟 JD 有多相似 */
+--     chunk_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+--     claim_id UUID REFERENCES claim(claim_id),
+--     support_level TEXT, /* 一筆claim可能有多筆evidence; 用support_level做加總平均 */
+--     content TEXT, /* 這段文字語意上跟 JD 有多相似 */
+--     embedding VECTOR(1536) /* pgvector 相似度搜尋的核心資料 */ /* tyahsin: why 1536? */
+-- ); /* tyahsin: what is the best structure for a pgvector-oriened table? */
+-- /* tyahsin: 建議做法是 onboard 時仍生成一組「基礎/廣義」tags 作為預設候選（方便一般檢索與瀏覽），
+-- CV generation 時再讓 LLM 針對特定 JD 做「措辭轉譯」而非從零生成，這樣既保留了你要的靈活性，
+-- 也避免每次都要從無到有分析整條 claim 全文的成本浪費*/
 
-CREATE INDEX ON claim_chunks USING hnsw (embedding vector_cosine_ops);
+-- CREATE INDEX ON claim_chunks USING hnsw (embedding vector_cosine_ops);
 
 -- ---------------------------------------------------------------------------
 -- apply/ 模組：職缺 + 投遞追蹤層（2026-08-19 新增）

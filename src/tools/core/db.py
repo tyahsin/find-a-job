@@ -280,7 +280,6 @@ class ProblemORM(Base):
     project_id = Column(PGUUID(as_uuid=True), ForeignKey("project.project_id"))
     problem_description = Column(Text)
     stakeholder_impact = Column(Text, nullable=True)
-    baseline_metric = Column(Text, nullable=True)
 
 # ---------------------------------------------------------------------------
 # Action layer -- belongs to a problem
@@ -305,7 +304,7 @@ class ClaimORM(Base):
     action_id = Column(PGUUID(as_uuid=True), ForeignKey("action.action_id"))
     claim_description = Column(Text)  # core CV bullet content (formerly result_statement)
 
-class ClaimMetricORM(Base):
+class MetricORM(Base):
     """
     One-to-many: a single claim can carry multiple quantifiable metrics
     (e.g. "processing time dropped from 5 days to 2 days" AND "customer
@@ -317,12 +316,11 @@ class ClaimMetricORM(Base):
     self-reported confidence (LLM self-confidence is known to be poorly
     calibrated).
     """
-    __tablename__ = "claim_metric"
+    __tablename__ = "metric"
 
     metric_id = _uuid_pk()
     claim_id = Column(PGUUID(as_uuid=True), ForeignKey("claim.claim_id"))
-    metric_type = Column(Text)  # Efficiency Improvement / Cost Saving / Quality Improvement / Other
-    metric_label = Column(Text)  # what the number represents, e.g. "processing time"
+    metric_description = Column(Text)  # what the number represents, e.g. "processing time"
     metric_value = Column(Text)  # original number/description, e.g. "reduced from 5 days to 2 days"
     metric_confidence = Column(Text)  # Precise / Estimated / Rough impression -- always human-selected
 
@@ -370,28 +368,28 @@ class GovernanceORM(Base):
     notes_for_llm = Column(Text, nullable=True)  # operating instructions for the generation model
     allowed_for_generation = Column(Boolean, default=True)  # hard governance switch
 
-# ---------------------------------------------------------------------------
-# Claim chunks layer (pgvector) -- belongs to a claim
-# ---------------------------------------------------------------------------
-# NOTE: VECTOR type requires the pgvector-sqlalchemy package's Vector column
-# type. If not yet installed (`pip install pgvector`), fall back to Text
-# below; swap the embedding column to Vector(1536) once the package is
-# installed.
+# # ---------------------------------------------------------------------------
+# # Claim chunks layer (pgvector) -- belongs to a claim
+# # ---------------------------------------------------------------------------
+# # NOTE: VECTOR type requires the pgvector-sqlalchemy package's Vector column
+# # type. If not yet installed (`pip install pgvector`), fall back to Text
+# # below; swap the embedding column to Vector(1536) once the package is
+# # installed.
 
-try:
-    from pgvector.sqlalchemy import Vector
-    _EMBEDDING_COLUMN = Column(Vector(1536))
-except ImportError:
-    _EMBEDDING_COLUMN = Column(Text)  # fallback, pgvector-sqlalchemy not yet installed
+# try:
+#     from pgvector.sqlalchemy import Vector
+#     _EMBEDDING_COLUMN = Column(Vector(1536))
+# except ImportError:
+#     _EMBEDDING_COLUMN = Column(Text)  # fallback, pgvector-sqlalchemy not yet installed
 
-class ClaimChunkORM(Base):
-    __tablename__ = "claim_chunks"
+# class ClaimChunkORM(Base):
+#     __tablename__ = "claim_chunks"
 
-    chunk_id = _uuid_pk()
-    claim_id = Column(PGUUID(as_uuid=True), ForeignKey("claim.claim_id"))
-    support_level = Column(Text, nullable=True)  # a claim may have multiple evidence rows; used to aggregate
-    content = Column(Text)
-    embedding = _EMBEDDING_COLUMN
+#     chunk_id = _uuid_pk()
+#     claim_id = Column(PGUUID(as_uuid=True), ForeignKey("claim.claim_id"))
+#     support_level = Column(Text, nullable=True)  # a claim may have multiple evidence rows; used to aggregate
+#     content = Column(Text)
+#     embedding = _EMBEDDING_COLUMN
 
 # ---------------------------------------------------------------------------
 # Job layer -- apply/ module (2026-08-19, replaces generated_outputs -- see
@@ -582,7 +580,7 @@ def compute_support_level(
     `evidence_levels`: the evidence_level of every EvidenceORM row for this
     claim (must be non-empty). Aggregated with MAX (OR logic).
 
-    `metric_confidences`: the metric_confidence of every ClaimMetricORM
+    `metric_confidences`: the metric_confidence of every MetricORM
     row for this claim. May be empty. Aggregated with MIN after mapping
     onto the L1-L4 scale (AND logic).
 
@@ -639,7 +637,7 @@ def fill_pending_support_levels() -> int:
             if not evidences:
                 continue
 
-            metrics = list_rows(fill_session, ClaimMetricORM, claim_id=governance.claim_id)
+            metrics = list_rows(fill_session, MetricORM, claim_id=governance.claim_id)
             governance.support_level = compute_support_level(
                 evidence_levels=[e.evidence_level for e in evidences],
                 metric_confidences=[m.metric_confidence for m in metrics],

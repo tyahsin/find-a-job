@@ -115,7 +115,7 @@ from rich.table import Table
 
 from core.db import (
     ActionORM,
-    ClaimMetricORM,
+    MetricORM,
     ClaimORM,
     ClaimTagORM,
     CompanyORM,
@@ -1029,9 +1029,6 @@ def _resolve_problem(session, project: ProjectORM) -> ProblemORM:
     stakeholder_impact = typer.prompt(
         "Which stakeholders were affected by this problem? (optional)", default="", show_default=False
     )
-    baseline_metric = typer.prompt(
-        "What was the baseline metric/state before this problem? (optional)", default="", show_default=False
-    )
 
     return create_row(
         session,
@@ -1040,7 +1037,6 @@ def _resolve_problem(session, project: ProjectORM) -> ProblemORM:
             "project_id": project.project_id,
             "description": problem_description,
             "stakeholder_impact": stakeholder_impact or None,
-            "baseline_metric": baseline_metric or None,
         },
     )
 
@@ -1099,48 +1095,46 @@ def _resolve_claim(session, action: ActionORM) -> ClaimORM:
 # add-claim: Step 3.5 -- metrics
 # ---------------------------------------------------------------------------
 
-def _review_metric_drafts(drafts: list[tuple[str, str, str]]) -> list[tuple[str, str, str, str]]:
+def _review_metric_drafts(drafts: list[tuple[str, str]]) -> list[tuple[str, str, str]]:
     console.print("\n[bold]Metric drafts (extracted by LLM from the result statement)[/bold]")
     if drafts:
         table = Table()
         table.add_column("#")
-        table.add_column("Type")
-        table.add_column("Label")
+        table.add_column("Desc")
         table.add_column("Value")
-        for idx, (m_type, m_label, m_value) in enumerate(drafts, start=1):
-            table.add_row(str(idx), m_type, m_label, m_value)
+        for idx, (m_desc, m_value) in enumerate(drafts, start=1):
+            table.add_row(str(idx), m_desc, m_value)
         console.print(table)
     else:
         console.print("[dim](LLM did not detect any quantifiable metrics)[/dim]")
 
     finalized: list[tuple[str, str, str, str]] = []
-    for m_type, m_label, m_value in drafts:
-        keep = typer.confirm(f'Keep the metric "{m_label}: {m_value}"?', default=True)
+    for m_desc, m_value in drafts:
+        keep = typer.confirm(f'Keep the metric "{m_desc}: {m_value}"?', default=True)
         if not keep:
             continue
-        edited_label = typer.prompt("Label", default=m_label)
+        edited_desc = typer.prompt("Description", default=m_desc)
         edited_value = typer.prompt("Value", default=m_value)
         confidence = _select_from_menu(
             METRIC_CONFIDENCE_OPTIONS,
-            title=f'Confidence level for "{edited_label}"?',
+            title=f'Confidence level for "{edited_desc}"?',
             allow_blank=False,
         )
-        finalized.append((m_type, edited_label, edited_value, confidence))
+        finalized.append((edited_desc, edited_value, confidence))
 
     while typer.confirm("Manually add another metric? (add anything the LLM missed here)", default=False):
-        m_type = _select_from_menu(METRIC_TYPE_OPTIONS, title="Metric type?", allow_blank=False)
-        m_label = typer.prompt("Label (what this number represents)")
+        m_desc = typer.prompt("Description (what this number represents)")
         m_value = typer.prompt("Value")
         confidence = _select_from_menu(
             METRIC_CONFIDENCE_OPTIONS,
-            title=f'Confidence level for "{m_label}"?',
+            title=f'Confidence level for "{m_desc}"?',
             allow_blank=False,
         )
-        finalized.append((m_type, m_label, m_value, confidence))
+        finalized.append((m_desc, m_value, confidence))
 
     return finalized
 
-def _resolve_metrics(session, claim: ClaimORM) -> list[ClaimMetricORM]:
+def _resolve_metrics(session, claim: ClaimORM) -> list[MetricORM]:
     client = get_llm_client()
     response = client.generate_text(
         system_prompt=METRIC_EXTRACTION_SYSTEM_PROMPT,
@@ -1149,16 +1143,15 @@ def _resolve_metrics(session, claim: ClaimORM) -> list[ClaimMetricORM]:
     drafts = parse_metric_response(response.text)
     finalized = _review_metric_drafts(drafts)
 
-    metric_orms: list[ClaimMetricORM] = []
-    for m_type, m_label, m_value, confidence in finalized:
+    metric_orms: list[MetricORM] = []
+    for m_desc, m_value, confidence in finalized:
         metric_orms.append(
             create_row(
                 session,
-                ClaimMetricORM,
+                MetricORM,
                 {
                     "claim_id": claim.claim_id,
-                    "metric_type": m_type,
-                    "metric_label": m_label,
+                    "metric_description": m_desc,
                     "metric_value": m_value,
                     "metric_confidence": confidence,
                 },
@@ -1381,19 +1374,19 @@ def add_claim(
             raise typer.Exit(code=0)
 
         claim_id = claim.claim_id
-        evidence_ids = [evidence.evidence_id for evidence in evidences]
-        metric_summaries = [f"{m.metric_label}: {m.metric_value}" for m in metrics]
-        tag_names = [tag.tag_name for tag in tags]
+        # evidence_ids = [evidence.evidence_id for evidence in evidences]
+        # metric_summaries = [f"{m.metric_label}: {m.metric_value}" for m in metrics]
+        # tag_names = [tag.tag_name for tag in tags]
 
     fill_pending_support_levels()
 
     console.print(f"[green]Done! New claim ID: {claim_id}[/green]")
-    console.print(f"[green]Evidence IDs ({len(evidence_ids)} total): {', '.join(str(e) for e in evidence_ids)}[/green]")
-    if metric_summaries:
-        console.print(f"[green]Metrics: {'; '.join(metric_summaries)}[/green]")
-    if tag_names:
-        console.print(f"[green]Tags: {', '.join(tag_names)}[/green]")
-    console.print("[green]Governance support_level: computed and filled in.[/green]")
+    # console.print(f"[green]Evidence IDs ({len(evidence_ids)} total): {', '.join(str(e) for e in evidence_ids)}[/green]")
+    # if metric_summaries:
+    #     console.print(f"[green]Metrics: {'; '.join(metric_summaries)}[/green]")
+    # if tag_names:
+    #     console.print(f"[green]Tags: {', '.join(tag_names)}[/green]")
+    # console.print("[green]Governance support_level: computed and filled in.[/green]")
 
 # ---------------------------------------------------------------------------
 # add-project-claim: from project to claims to all corresponding columns
@@ -1411,7 +1404,7 @@ def _resolve_llm_response(llm_response: LLMResponse) -> list:
         raise ValueError(f"LLMResponse unable to parse: {e}\nerror message: {llm_response.finish_reason}") from e
 
     if not isinstance(parsed, list):
-        raise ValueError(f"預期回傳 JSON array，實際收到: {type(parsed)}")
+        raise ValueError(f"Unexpected data type: {type(parsed)}")
 
     return parsed
 
@@ -1479,16 +1472,14 @@ def add_claims(
         else:
             project = _select_project_interactively(session)
 
-        console.print(f"[bold]Selected project: {project.project_name}[/bold]\n")
+    raw_claims = _resolve_claims(project) 
+    for i, raw_claim in enumerate(raw_claims):
+        confirmed = {}
+        for key, val in raw_claim.items(): 
+            confirmed_val = _confirm_or_edit(val, key)
+            confirmed[key] = confirmed_val
 
-        raw_claims = _resolve_claims(project) 
-        for i, raw_claim in enumerate(raw_claims):
-            confirmed = {}
-            for key, val in raw_claim.items(): 
-                confirmed_val = _confirm_or_edit(val, key)
-                confirmed[key] = confirmed_val
-
-            console.print(f"[green]No. {(i+1)} claim has been confirmed. Ready to insert into database:[/green]")
+        with get_session() as session:
             problem = create_row(
                 session,
                 ProblemORM,
@@ -1496,7 +1487,6 @@ def add_claims(
                     "project_id": project.project_id,
                     "problem_description": confirmed["problem_description"],
                     "stakeholder_impact": confirmed["stakeholder_impact"],
-                    "baseline_metric": confirmed["baseline_metric"],
                 }
             )
             action = create_row(
@@ -1516,6 +1506,11 @@ def add_claims(
                     "claim_description": confirmed["claim_description"],
                 }
             )
+            if not _confirm_final_write():
+                console.print(f"[yellow] Claim {(i+1)} dumped -- no changes were written.[/yellow]")
+                continue
+
+        with get_session() as session:
             metrics = _resolve_metrics(session, claim)
             evidences = _resolve_evidences(session, claim)
             tags = _resolve_tags(session, claim, problem, action, evidences, project)
@@ -1523,22 +1518,22 @@ def add_claims(
 
             if not _confirm_final_write():
                 console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-                raise typer.Exit(code=0)
+                continue
 
-            claim_id = claim.claim_id
-            evidence_ids = [evidence.evidence_id for evidence in evidences]
-            metric_summaries = [f"{m.metric_label}: {m.metric_value}" for m in metrics]
-            tag_names = [tag.tag_name for tag in tags]
+            # claim_id = claim.claim_id
+            # evidence_ids = [evidence.evidence_id for evidence in evidences]
+            # metric_summaries = [f"{m.metric_label}: {m.metric_value}" for m in metrics]
+            # tag_names = [tag.tag_name for tag in tags]
 
-            fill_pending_support_levels()
-
-            console.print(f"[green]Done! New claim ID: {claim_id}[/green]")
-            console.print(f"[green]Evidence IDs ({len(evidence_ids)} total): {', '.join(str(e) for e in evidence_ids)}[/green]")
-            if metric_summaries:
-                console.print(f"[green]Metrics: {'; '.join(metric_summaries)}[/green]")
-            if tag_names:
-                console.print(f"[green]Tags: {', '.join(tag_names)}[/green]")
-            console.print("[green]Governance support_level: computed and filled in.[/green]")
+        fill_pending_support_levels()
+        console.print(f"[green] {project.project_name} has {(i+1)} claim(s) written into database [/green]")
+        # console.print(f"[green]Done! New claim ID: {claim_id}[/green]")
+        # console.print(f"[green]Evidence IDs ({len(evidence_ids)} total): {', '.join(str(e) for e in evidence_ids)}[/green]")
+        # if metric_summaries:
+        #     console.print(f"[green]Metrics: {'; '.join(metric_summaries)}[/green]")
+        # if tag_names:
+        #     console.print(f"[green]Tags: {', '.join(tag_names)}[/green]")
+        # console.print("[green]Governance support_level: computed and filled in.[/green]")
 
 @app.command("add-project-claims")
 def add_project_claims() -> None:

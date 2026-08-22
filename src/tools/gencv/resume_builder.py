@@ -54,7 +54,7 @@ from collections import defaultdict
 import yaml
 
 from core.config import get_cv_config
-from core.db import get_session, ClaimMetricORM, ClaimTagORM, TagORM, ClaimORM, ActionORM, ProblemORM, ProjectORM, CompanyORM, SchoolORM
+from core.db import get_session, MetricORM, ClaimTagORM, TagORM, ClaimORM, ActionORM, ProblemORM, ProjectORM, CompanyORM, SchoolORM
 from gencv.experience_matcher import fetch_experience_contexts, to_uuid_list
 from gencv.skill_grouper import group_skills_for_jd
 from gencv.identity_selector import select_identity_from_jd, select_networks_from_jd
@@ -88,8 +88,8 @@ def build_experience_entries(session, claim_ids, description_overrides=None):
     metrics_by_claim = defaultdict(list)
     if work_claim_ids:
         metric_rows = (
-            session.query(ClaimMetricORM)
-            .filter(ClaimMetricORM.claim_id.in_(to_uuid_list(work_claim_ids)))
+            session.query(MetricORM)
+            .filter(MetricORM.claim_id.in_(to_uuid_list(work_claim_ids)))
             .all()
         )
         for m in metric_rows:
