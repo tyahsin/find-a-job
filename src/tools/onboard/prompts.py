@@ -21,7 +21,7 @@ Prompt templates used by the onboard CLI flows to draft:
 - project.project_context (from a short user-provided description)
 - action.description (what was done)
 - claim.description (what result followed from the action -- deliberately
-  scoped AWAY from action's territory, see RESULT_CLAIM_SYSTEM_PROMPT below)
+  scoped AWAY from action's territory, see CLAIM_SYSTEM_PROMPT below)
 
 Design principle (matches the project's governance rules): the LLM only
 rephrases/organizes what the user already provided. It must NOT invent
@@ -271,9 +271,9 @@ Output the summary (plain text, no preamble):"""
 # filling in. This version explicitly draws the boundary: description =
 # what happened AFTER the action, not the action itself.
 
-RESULT_CLAIM_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
+CLAIM_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
 Purpose of this summary: describe the RESULT that followed from a
-specific action (claim.description). Describe only the result itself --
+specific action (claim.claim_description). Describe only the result itself --
 e.g. data changes, deliverables, impact, efficiency gains, being
 accepted/adopted, etc. Do not repeat "what was done" (that's action's
 job) -- only describe "what happened after it was done".
@@ -447,35 +447,11 @@ def parse_tag_response(raw_text: str) -> list[tuple[str, str]]:
 # fixed-choice menus (Aug 2026 update: role_scope / value_type /
 # metric_confidence should be selected from a list, not free-typed)
 # ---------------------------------------------------------------------------
-# ROLE_SCOPE_OPTIONS: human-selected fixed menu, already English.
-#
-# VALUE_TYPE_OPTIONS / METRIC_TYPE_OPTIONS: English (v1.1). This list is
-# used BOTH as the set of values METRIC_EXTRACTION_SYSTEM_PROMPT asks the
-# LLM to choose from, AND as the human-facing CLI menu in
-# cli.py._review_metric_drafts() when the user manually adds a metric the
-# LLM missed -- one list serves both call sites.
-#
-# METRIC_CONFIDENCE_OPTIONS: English (v1.2). Still never LLM output --
-# confidence is always a manual human choice from this fixed CLI menu (LLM
-# self-reported confidence is known to be poorly calibrated, see
-# METRIC_EXTRACTION_SYSTEM_PROMPT rule 3).
-
 ROLE_SCOPE_OPTIONS: list[str] = [
     "Led",
     "Collaborated",
     "Supported",
 ]
-
-# VALUE_TYPE_OPTIONS: list[str] = [
-#     "Efficiency Improvement",
-#     "Cost Saving",
-#     "Quality Improvement",
-# ]
-
-# metric_type reuses the same three categories plus "Other" for metrics
-# that don't cleanly fit (this is exactly the gap that motivated splitting
-# metrics out into their own claim_metric table).
-# METRIC_TYPE_OPTIONS: list[str] = VALUE_TYPE_OPTIONS + ["Other"]
 
 METRIC_CONFIDENCE_OPTIONS: list[str] = [
     "Precise",
@@ -498,7 +474,7 @@ METRIC_CONFIDENCE_OPTIONS: list[str] = [
 # itself is generated in English, but the rule is stated explicitly here
 # too as a defensive guarantee.
 
-METRIC_EXTRACTION_SYSTEM_PROMPT = """Your task is to extract all quantifiable metrics from a result
+METRIC_EXTRACTION_SYSTEM_PROMPT = """Your task is to extract all quantifiable metrics from a claim
 description (description).
 
 CRITICAL RULE -- read first: every field you output (description, value)
@@ -513,12 +489,14 @@ Other strict rules (must follow):
      "customer satisfaction"), described concisely, in English.
    - value: must written in before-vs.-after style (e.g. "reduced from 5 days to 2 days",
      "mean sqaured error dropped from 0.0045 to 0.0029").
-     if 2 source values share the similar characteristics, build them as 1 metric.
      keep the original number/description intact but in English.
 3. Do not output a confidence level -- confidence is judged by the user
    manually and is not your concern.
 4. If the text contains no quantifiable metric at all, return blank
    (output no lines).
+5. If 2 source values share the same measurement (e.g. the mean square error of 
+   Random Forest model vs. the MSE of a GridSearch model), build them as 1 metric. 
+
 
 Output format: one entry per line, separated by |: description|value
 No preamble, explanatory text, or extra punctuation.
