@@ -511,8 +511,10 @@ Other strict rules (must follow):
 2. Output two fields per metric: description, value.
    - description: what the number actually represents (e.g. "processing time",
      "customer satisfaction"), described concisely, in English.
-   - value: keep the original number/description intact but in English
-     (e.g. "reduced from 5 days to 2 days", "about 15%").
+   - value: must written in before-vs.-after style (e.g. "reduced from 5 days to 2 days",
+     "mean sqaured error dropped from 0.0045 to 0.0029").
+     if 2 source values share the similar characteristics, build them as 1 metric.
+     keep the original number/description intact but in English.
 3. Do not output a confidence level -- confidence is judged by the user
    manually and is not your concern.
 4. If the text contains no quantifiable metric at all, return blank

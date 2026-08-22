@@ -1100,7 +1100,7 @@ def _review_metric_drafts(drafts: list[tuple[str, str]]) -> list[tuple[str, str,
     if drafts:
         table = Table()
         table.add_column("#")
-        table.add_column("Desc")
+        table.add_column("Description")
         table.add_column("Value")
         for idx, (m_desc, m_value) in enumerate(drafts, start=1):
             table.add_row(str(idx), m_desc, m_value)
@@ -1458,10 +1458,6 @@ def add_claims(
     ),
 ):
     """Bulk add claims to database through source files or URLs."""
-    claim_id: Optional[UUID] = None
-    evidence_ids: list[UUID] = []
-    metric_summaries: list[str] = []
-    tag_names: list[str] = []
 
     with get_session() as session:
         if project_id is not None:
@@ -1506,29 +1502,18 @@ def add_claims(
                     "claim_description": confirmed["claim_description"],
                 }
             )
-            metrics = _resolve_metrics(session, claim)
+            _resolve_metrics(session, claim)
             evidences = _resolve_evidences(session, claim)
-            tags = _resolve_tags(session, claim, problem, action, evidences, project)
+            _resolve_tags(session, claim, problem, action, evidences, project)
             _resolve_governance(session, claim)
 
             if not _confirm_final_write():
                 console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
                 continue
 
-            # claim_id = claim.claim_id
-            # evidence_ids = [evidence.evidence_id for evidence in evidences]
-            # metric_summaries = [f"{m.metric_label}: {m.metric_value}" for m in metrics]
-            # tag_names = [tag.tag_name for tag in tags]
-
         fill_pending_support_levels()
         console.print(f"[green] {project.project_name} has {(i+1)} claim(s) written into database [/green]")
-        # console.print(f"[green]Done! New claim ID: {claim_id}[/green]")
-        # console.print(f"[green]Evidence IDs ({len(evidence_ids)} total): {', '.join(str(e) for e in evidence_ids)}[/green]")
-        # if metric_summaries:
-        #     console.print(f"[green]Metrics: {'; '.join(metric_summaries)}[/green]")
-        # if tag_names:
-        #     console.print(f"[green]Tags: {', '.join(tag_names)}[/green]")
-        # console.print("[green]Governance support_level: computed and filled in.[/green]")
+
 
 @app.command("add-project-claims")
 def add_project_claims() -> None:
