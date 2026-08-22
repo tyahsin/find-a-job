@@ -113,8 +113,7 @@ CREATE TABLE metric (
     metric_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     claim_id UUID REFERENCES claim(claim_id), /* 對應哪條結果聲稱 */
     metric_description TEXT, /* 這個數字代表什麼，例如「處理時間」「客戶滿意度」 */
-    metric_before TEXT /* 問題發生前的現況指標 */ 
-    metric_after TEXT, /* 數值本身，含單位/描述，例如「從5天降到2天」「約15%」 */
+    metric_value TEXT, /* 數值本身，含單位/描述，例如「從5天降到2天」「約15%」 */
     metric_confidence TEXT /* 精確 / 估算 / 大致印象 -- 一律人工判定 */
 );
 
@@ -144,7 +143,7 @@ CREATE TABLE tag (
     tag_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tag_name TEXT UNIQUE NOT NULL, -- 標準寫法，唯一
     tag_category TEXT NOT NULL CHECK (
-        tag_category IN ('skill', 'domain', 'job_function')
+        tag_category IN ('tool', 'capability', 'context')
     ),
     aliases TEXT[] DEFAULT '{}', -- 同義詞/其他措辭，供 fuzzy match 比對用
     created_at TIMESTAMP DEFAULT now(),
@@ -209,7 +208,6 @@ CREATE TABLE application (
             'Interviewing',
             'Offer',
             'Rejected',
-            'Withdrawn',
             'Ghosted'
         )
     ),

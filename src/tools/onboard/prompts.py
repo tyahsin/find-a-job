@@ -53,6 +53,8 @@ relying on exact-match logic against it.
 
 from __future__ import annotations
 
+from core.db import TAG_CATEOGRY
+
 # ---------------------------------------------------------------------------
 # Shared system-level guardrails
 # ---------------------------------------------------------------------------
@@ -397,8 +399,8 @@ def build_tag_prompt(
     `static_context` carries the claim's linked static (relatively
     unchanging) data -- company/position or school/degree info -- resolved
     upstream from the claim -> action -> problem -> project -> position/
-    degree -> company/school chain. Including this lets the LLM infer
-    domain/job_function tags that are implied by *where* the work happened
+    degree -> company/school chain. Including this lets the LLM infer 
+    tags that are implied by *where* the work happened
     (e.g. "Fintech" from company industry, "Data Engineering" from job
     title) even when that context isn't explicitly repeated in the
     problem/action/result text. The caller (cli.py._build_static_context)
@@ -427,7 +429,7 @@ def parse_tag_response(raw_text: str) -> list[tuple[str, str]]:
     Skips malformed lines rather than raising, since this is LLM output that
     the user will review/edit anyway before it's persisted.
     """
-    valid_categories = {"skill", "domain", "job_function"}
+    # valid_categories = {"skill", "domain", "job_function"}
     results: list[tuple[str, str]] = []
     for line in raw_text.strip().splitlines():
         line = line.strip()
@@ -436,7 +438,7 @@ def parse_tag_response(raw_text: str) -> list[tuple[str, str]]:
         name_part, _, category_part = line.partition("|")
         name = name_part.strip()
         category = category_part.strip().lower()
-        if name and category in valid_categories:
+        if name and category in TAG_CATEOGRY: # valid_categories:
             results.append((name, category))
     return results
 
@@ -464,16 +466,16 @@ ROLE_SCOPE_OPTIONS: list[str] = [
     "Supported",
 ]
 
-VALUE_TYPE_OPTIONS: list[str] = [
-    "Efficiency Improvement",
-    "Cost Saving",
-    "Quality Improvement",
-]
+# VALUE_TYPE_OPTIONS: list[str] = [
+#     "Efficiency Improvement",
+#     "Cost Saving",
+#     "Quality Improvement",
+# ]
 
 # metric_type reuses the same three categories plus "Other" for metrics
 # that don't cleanly fit (this is exactly the gap that motivated splitting
 # metrics out into their own claim_metric table).
-METRIC_TYPE_OPTIONS: list[str] = VALUE_TYPE_OPTIONS + ["Other"]
+# METRIC_TYPE_OPTIONS: list[str] = VALUE_TYPE_OPTIONS + ["Other"]
 
 METRIC_CONFIDENCE_OPTIONS: list[str] = [
     "Precise",
@@ -499,7 +501,7 @@ METRIC_CONFIDENCE_OPTIONS: list[str] = [
 METRIC_EXTRACTION_SYSTEM_PROMPT = """Your task is to extract all quantifiable metrics from a result
 description (description).
 
-CRITICAL RULE -- read first: every field you output (type, label, value)
+CRITICAL RULE -- read first: every field you output (description, value)
 MUST be written in English, no matter what language the source description
 is written in.
 
@@ -516,7 +518,7 @@ Other strict rules (must follow):
 4. If the text contains no quantifiable metric at all, return blank
    (output no lines).
 
-Output format: one entry per line, separated by |: type|label|value
+Output format: one entry per line, separated by |: description|value
 No preamble, explanatory text, or extra punctuation.
 """
 
@@ -526,8 +528,8 @@ def build_metric_extraction_prompt(description: str) -> str:
 
 {description}
 
-Extract all quantifiable metrics from it. Remember: type/label/value must
-all be in English (format: type|label|value):"""
+Extract all quantifiable metrics from it. Remember: description/value must
+all be in English (format: description|value):"""
 
 
 def parse_metric_response(raw_text: str) -> list[tuple[str, str]]:

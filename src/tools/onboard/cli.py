@@ -1035,7 +1035,7 @@ def _resolve_problem(session, project: ProjectORM) -> ProblemORM:
         ProblemORM,
         {
             "project_id": project.project_id,
-            "description": problem_description,
+            "problem_description": problem_description,
             "stakeholder_impact": stakeholder_impact or None,
         },
     )
@@ -1064,7 +1064,7 @@ def _resolve_action(session, problem: ProblemORM) -> ActionORM:
         ActionORM,
         {
             "problem_id": problem.problem_id,
-            "description": action_description,
+            "action_description": action_description,
             "role_scope": role_scope,
         },
     )
@@ -1087,7 +1087,7 @@ def _resolve_claim(session, action: ActionORM) -> ClaimORM:
         ClaimORM,
         {
             "action_id": action.action_id,
-            "description": description,
+            "claim_description": description,
         },
     )
 
@@ -1506,11 +1506,6 @@ def add_claims(
                     "claim_description": confirmed["claim_description"],
                 }
             )
-            if not _confirm_final_write():
-                console.print(f"[yellow] Claim {(i+1)} dumped -- no changes were written.[/yellow]")
-                continue
-
-        with get_session() as session:
             metrics = _resolve_metrics(session, claim)
             evidences = _resolve_evidences(session, claim)
             tags = _resolve_tags(session, claim, problem, action, evidences, project)

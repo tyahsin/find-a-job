@@ -341,8 +341,20 @@ class EvidenceORM(Base):
 # Tag layer -- LLM-generated, human-confirmed; many-to-many with claim
 # ---------------------------------------------------------------------------
 
+TAG_CATEOGRY = (
+    "tool", 
+    'capability', 
+    'context'
+)
+
 class TagORM(Base):
     __tablename__ = "tag"
+    __table_args__ = (
+        CheckConstraint(
+            f"tag_category IN ({TAG_CATEOGRY})",
+            name="tag_tag_category_valid",
+        ),
+    )
 
     tag_id = _uuid_pk()
     tag_name = Column(Text, unique=True, nullable=False)
