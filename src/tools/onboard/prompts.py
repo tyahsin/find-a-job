@@ -135,6 +135,7 @@ DEGREE_DESCRIPTION_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
 Purpose of this summary: describe the scope/focus of a degree program
 (degree.degree_description). This should be an objective description of
 what the program covered or focused on, not an achievement narrative.
+Stress more on the curriculum where  
 Suggested length: 2 sentences at most and less than 25 words.
 """
 
