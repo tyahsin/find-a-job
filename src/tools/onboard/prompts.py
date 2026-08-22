@@ -609,10 +609,12 @@ Lenght contraint: action_description and claim_description are 15-30 words
 each. problem_description, and stakeholder_impact are
 concise (under 20 words) or null when not stated in source.
 
-Output constraint: extract at most 8 claims per call. If the source text
-could yield more than 8 distinct claims, prioritize those with the
-strongest evidence and highest resume relevance; omit the weaker ones
-rather than risk truncating output mid-object.
+Output constraint: extract at most 8 claims per call (do not make it up to 8 if 
+source itself is deficient in description or claims share too similar attributes). 
+If the source text could yield more than 8 distinct claims, prioritize those with 
+the strongest evidence (i.e. with precise numbers or texts describing changes and outcomes) 
+and highest resume relevance; omit the weaker ones rather than risk truncating 
+output mid-object.
 """
 
 def build_claims_prompt_from_source(source_text: str) -> dict:
