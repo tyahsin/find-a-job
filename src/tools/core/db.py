@@ -241,6 +241,8 @@ class DegreeORM(Base):
     degree_name = Column(Text)  # the subject/area itself, e.g. "Computer Science"
     degree_description = Column(Text, nullable=True)
     degree_description_source = Column(Text, nullable=True)  # NULL => LLM-generated, no source doc
+    degree_honors = Column(ARRAY(Text), nullable=False) 
+    degree_awards = Column(ARRAY(Text), nullable=False) 
     start_date = Column(Date)
     end_date = Column(Date, nullable=True)
 
@@ -346,7 +348,7 @@ class TagORM(Base):
 
     tag_id = _uuid_pk()
     tag_name = Column(Text, unique=True, nullable=False)
-    tag_category = Column(Text, nullable=False)  # skill | domain | job_function
+    tag_category = Column(Text, nullable=False) 
 
 class ClaimTagORM(Base):
     __tablename__ = "claim_tag"

@@ -619,6 +619,7 @@ def add_position() -> None:
 
     console.print(f"[green]Done! Position ID: {position_id}[/green]")
 
+
 @app.command("add-degree")
 def add_degree() -> None:
     """Interactively add a single degree record under an existing school (standalone, no project required)."""
@@ -732,6 +733,36 @@ def _draft_degree_description() -> tuple[str, Optional[str]]:
     final_text = _confirm_or_edit(response.text, "Degree description")
     return final_text, None
 
+def _resolve_degree_achievements():
+    """Repeatedly prompts for degree_honors or degree_wards. Enter on a
+    blank line ends the loop. Leaving the very first prompt blank is
+    allowed and returns an empty list"""
+    honors: list = []
+    awards: list = []
+    console.print(
+        "\nEnter the hornors/awards this degree received one at a time. "
+        "Press Enter on a blank line to finish. "
+        "Leave blank immediately if none: "
+    )
+    while True:
+        achievement = typer.prompt(
+            "Achievement(leave blank to finish)",
+            default="",
+            show_default=False,
+        )
+        if not achievement.strip():
+            break
+        is_honor = typer.prompt(
+            "Is this an honor or an award (type Y if it's an honor and N if award)",
+            default = "Y",
+            show_default=True
+        )
+        if is_honor:
+            honors.append(achievement.strip())
+        else:
+            awards.append(achievement.strip())
+    return honors, awards
+
 def _resolve_degree(session, school: "SchoolORM") -> "DegreeORM":
     """v3: honors/awards prompts and fields removed -- see module docstring."""
     existing = list_rows(session, DegreeORM, school_id=school.school_id)
@@ -753,6 +784,8 @@ def _resolve_degree(session, school: "SchoolORM") -> "DegreeORM":
 
     degree_description, degree_description_source = _draft_degree_description()
 
+    degree_honors, degree_awards = _resolve_degree_achievements()
+
     return create_row(
         session,
         DegreeORM,
@@ -763,6 +796,8 @@ def _resolve_degree(session, school: "SchoolORM") -> "DegreeORM":
             "degree_name": degree_name,
             "degree_description": degree_description,
             "degree_description_source": degree_description_source,
+            "degree_honors": degree_honors,
+            "degree_awards": degree_awards,
             "start_date": start_dt,
             "end_date": end_dt,
         },

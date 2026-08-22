@@ -60,8 +60,8 @@ CREATE TABLE degree (
     degree_name TEXT,
     degree_description TEXT, /* tyahsin: precompute：定版簡述，人工或LLM生成皆存在此欄位 */
     degree_description_source TEXT DEFAULT NULL, /* 原始資料連結/路徑；NULL代表無原文，簡述為LLM生成 */
-    -- degree_honors TEXT [], /* tyahsin: cum laude, magna cum laude, summa cum laude, etc. */
-    -- degree_awards TEXT [], /* tyahsin: scholarships, fellowships, etc. */
+    degree_honors TEXT [], /* tyahsin: cum laude, magna cum laude, summa cum laude, etc. */
+    degree_awards TEXT [], /* tyahsin: scholarships, fellowships, etc. */
     start_date DATE,
     end_date DATE NULL
 );
