@@ -484,6 +484,8 @@ is written in.
 Other strict rules (must follow):
 1. Only extract numbers/quantified statements explicitly present in the
    text -- do not guess, estimate, or invent data not written in the text.
+   There must be 2 numbers/quantified statements to present the effects before
+   the action and after the action; if not, drop this extraction.
 2. Output two fields per metric: description, value.
    - description: what the number actually represents (e.g. "processing time",
      "customer satisfaction"), described concisely, in English.

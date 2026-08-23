@@ -1077,7 +1077,7 @@ def _resolve_claim(session, action: ActionORM) -> ClaimORM:
     raw_input_text = typer.prompt("What concrete result did this action produce? (describe only the result, don't repeat the action)")
     client = get_llm_client()
     response = client.generate_text(
-        system_prompt=RESULT_CLAIM_SYSTEM_PROMPT,
+        system_prompt=CLAIM_SYSTEM_PROMPT,
         user_prompt=build_result_claim_prompt(raw_input_text),
     )
     description = _confirm_or_edit(response.text, "Result statement")
@@ -1113,8 +1113,8 @@ def _review_metric_drafts(drafts: list[tuple[str, str]]) -> list[tuple[str, str,
         keep = typer.confirm(f'Keep the metric "{m_desc}: {m_value}"?', default=True)
         if not keep:
             continue
-        edited_desc = typer.prompt("Description", default=m_desc)
-        edited_value = typer.prompt("Value", default=m_value)
+        edited_desc = typer.prompt("Confirm description writing? (Press Enter to accept, or type new text to override) ", default=m_desc)
+        edited_value = typer.prompt("Confirm value writing? (Press Enter to accept, or type new text to override) ", default=m_value)
         confidence = _select_from_menu(
             METRIC_CONFIDENCE_OPTIONS,
             title=f'Confidence level for "{edited_desc}"?',
