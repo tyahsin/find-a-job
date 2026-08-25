@@ -12,17 +12,24 @@ CREATE TABLE identity (
     email TEXT NOT NULL,
     phone TEXT NOT NULL,
     is_default BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP NOT NULL DEFAULT now()
 );
+
+-- Enforce at most one default identity at the database level (partial
+-- unique index -- only rows where is_default = TRUE participate in the
+-- uniqueness check, so any number of FALSE rows are allowed).
+CREATE UNIQUE INDEX identity_only_one_default
+ON identity (is_default)
+WHERE is_default = TRUE;
 
 CREATE TABLE network (
     network_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     network TEXT NOT NULL, -- 例如 "GitHub", "LinkedIn", "Behance"
     username TEXT NOT NULL,
     target_position TEXT [], -- 這個連結適用的工種，例如 "Software Engineer", "Designer"
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
 -- 公司層
@@ -216,3 +223,12 @@ CREATE TABLE application (
     created_at TIMESTAMP DEFAULT now(),
     updated_at TIMESTAMP DEFAULT now()
 );
+
+-- current_stage 是 CLI 查詢/dashboard 最常用的過濾條件（例如「列出所有
+-- Interviewing 狀態的投遞」），建索引加速。
+CREATE INDEX idx_application_current_stage
+ON application (current_stage);
+
+-- job_id 外鍵查詢（例如「這個職缺投過幾次」），建索引加速 JOIN。
+CREATE INDEX idx_application_job_id
+ON application (job_id);
