@@ -129,16 +129,9 @@ def _parse_overrides(raw_value: str, field_order: list[str]) -> tuple[dict, list
         overrides[key] = value
     return overrides, unknown_keys
 
-# def confirm_or_edit(
-        
-# ): 
-#     """
-#     """
-
-
 def confirm_fields_once(
     fields: dict,
-    field_order: list[str],
+    field_order: list[str] | None = None,
     header: str = "Drafted fields:",
     prompt_text: str | None = None,
 ) -> dict | None:
@@ -162,6 +155,8 @@ def confirm_fields_once(
     applied), or None if the user aborted via 'skip'.
     """
     current_fields = dict(fields)
+    if field_order is None:
+        field_order = list(fields.keys())
 
     while True:
         print(f"\n{header}")
@@ -204,3 +199,64 @@ def confirm_fields_once(
             continue
 
         print(f"  [Error] {decision.value}")
+
+def build_regenerate_prompt(previous_output: str, steering_note: str) -> str:
+    """
+    Shared user-prompt builder for all three regenerate calls. The system 
+    prompt already carries the field-specific boundary, so this template 
+    stays identical across all three fields.
+    """
+    return f"""# Previous draft (the user was not satisfied with this)
+{previous_output}
+
+# User's steering note for this regeneration
+{steering_note}
+
+Output the revised sentence:"""
+
+def confirm_field(draft: str, system_prompt: str):
+    from core.llm_client import get_llm_client
+    while True:
+        raw = input(
+            f"(Enter to accept / 'r' or 'r <text>' to regenerate / 'o <text>' to override/ 'skip' to skip): "
+        ).strip()
+        decision = parse_review_input(raw)
+
+        if decision.action == "regenerate":
+            print(f"  Regenerating...\n")
+            user_prompt = build_regenerate_prompt(
+                previous_output=draft,
+                steering_note=decision.value,
+            )
+            client = get_llm_client()
+            draft = client.generate_text(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+        elif decision.action == "override":
+            print(f"  -> Using manually entered text\n")
+            return decision.value
+        elif decision.action == "accept":
+            print(f"  -> Using this LLM-(re)generated text\n")
+            return draft
+        elif decision.action == "skip":
+            print(f"  -> Moving on to the next entry...\n")
+            return None
+            
+def confirm_fields_multiple(drafts: list[tuple], field_order: list, system_prompts: list):
+    """
+    Confirm or edit the LLM suggested entries one by one. User can either keep, 
+    regenerate, override, or skip the entry of more than 1 value to evaluate.
+    """
+    finalized = []
+    for idx, items in enumerate(drafts, start=1):
+        groups = []
+        for item, field_name, system_prompt in zip(items, field_order, system_prompts):
+            print(f"Accept item {idx}'s {field_name} [{item}]? ")
+            edited = confirm_field(item, system_prompt)
+            if not edited: # if the first item content is None, the whole entry will be dropped
+                break
+            groups.append(edited)
+        if groups:
+            finalized.append(tuple(groups))
+    return finalized 
