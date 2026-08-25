@@ -308,14 +308,14 @@ Output the summary (plain text, no preamble):"""
 # L1 = strongest (verifiable, third-party or system-of-record evidence)
 # L4 = weakest (unverifiable, self-reported recollection)
 
-EVIDENCE_TYPE_TO_LEVEL: list[tuple[str, str]] = [
-    ("Formal documentation (contract / official report / system screenshot)", "L1"),
-    ("Third-party verification (manager review / client feedback / formal evaluation)", "L1"),
-    ("Data record (analytics report / system log / dashboard)", "L2"),
-    ("Internal team documentation (meeting notes / email / Slack conversation)", "L2"),
-    ("Verbal account / recollection (no written record, memory only)", "L3"),
-    ("Inference / estimate (reasonable inference without direct evidence)", "L4"),
-]
+# EVIDENCE_TYPE_TO_LEVEL: list[tuple[str, str]] = [
+#     ("Formal documentation (contract / official report / system screenshot)", "L1"),
+#     ("Third-party verification (manager review / client feedback / formal evaluation)", "L1"),
+#     ("Data record (analytics report / system log / dashboard)", "L2"),
+#     ("Internal team documentation (meeting notes / email / Slack conversation)", "L2"),
+#     ("Verbal account / recollection (no written record, memory only)", "L3"),
+#     ("Inference / estimate (reasonable inference without direct evidence)", "L4"),
+# ]
 
 # ---------------------------------------------------------------------------
 # tag generation (Problem 1 & 2 & 3 from Aug 2026 review)

@@ -20,8 +20,8 @@ Changelog:
   functionality is DONE, not pending. No function bodies, control flow,
   or strings were changed in this pass.
 - v1.9 (2026-08-10): add-project's work/education branches now try a flat
-  join-based selector FIRST (_select_existing_position_flat /
-  _select_existing_degree_flat), mirroring the pattern already used by
+  join-based selector FIRST (_select_existing_position /
+  _select_existing_degree), mirroring the pattern already used by
   add-claim's project selector. If any position+company (work track) or
   degree+school (education track) rows already exist, the user sees one
   numbered table with Institution / Role columns and can pick directly --
@@ -198,8 +198,8 @@ def _confirm_or_edit(draft, label: str, system_prompt: str) -> str:
 
         console.print(f"[red][Error] {decision.value}[/red]")
 
-def _confirm_final_write() -> bool:
-    return typer.confirm("\nConfirm write to database?", default=True)
+# def _confirm_final_write() -> bool:
+#     return typer.confirm("\nConfirm write to database?", default=True)
 
 def _create_table(items: list, columns: list, title: str | None = None) -> None:
 
@@ -273,6 +273,10 @@ def _select_from_menu(options: list[str], title: str, allow_blank: bool = False)
     for idx, option in enumerate(options, start=1):
         table.add_row(str(idx), option)
     console.print(table)
+    # columns = ["Option"]
+    # if allow_blank:
+    #     # add 0
+    # _create_table(options, columns, title)
 
     choice = typer.prompt("Select a number", type=int)
     if allow_blank and choice == 0:
@@ -384,10 +388,6 @@ def add_identity() -> None:
             make_default = typer.confirm("Set this as the default identity (is_default)?", default=False)
 
         _handle_default_flag(session, make_default)
-
-        if not _confirm_final_write():
-            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-            raise typer.Exit(code=0)
 
         identity = create_row(
             session,
@@ -501,10 +501,6 @@ def add_network() -> None:
         username = typer.prompt(f"Username for {network_name} (e.g. yahsintsai)")
         target_position = _resolve_target_positions()
 
-        if not _confirm_final_write():
-            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-            raise typer.Exit(code=0)
-
         network = create_row(
             session,
             NetworkORM,
@@ -536,7 +532,7 @@ def add_network() -> None:
 #    existing rows were available -- the escape hatch for genuinely
 #    new companies/positions.
 
-def _select_existing_position_flat(session) -> Optional[PositionORM]:
+def _select_existing_position(session) -> Optional[PositionORM]:
     rows = (
         session.query(PositionORM, CompanyORM)
         .join(CompanyORM, PositionORM.company_id == CompanyORM.company_id)
@@ -559,7 +555,7 @@ def _select_existing_position_flat(session) -> Optional[PositionORM]:
         return None
     return rows[choice - 1][0]
 
-def _select_existing_degree_flat(session) -> Optional[DegreeORM]:
+def _select_existing_degree(session) -> Optional[DegreeORM]:
     rows = (
         session.query(DegreeORM, SchoolORM)
         .join(SchoolORM, DegreeORM.school_id == SchoolORM.school_id)
@@ -596,10 +592,6 @@ def _resolve_company(session) -> CompanyORM:
 
     location = typer.prompt("Location", default="", show_default=False)
 
-    if not _confirm_final_write():
-        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        raise typer.Exit(code=0)
-
     return create_row(
         session,
         CompanyORM,
@@ -615,10 +607,6 @@ def _resolve_school(session) -> SchoolORM:
             return chosen
 
     location = typer.prompt("Location", default="", show_default=False)
-
-    if not _confirm_final_write():
-        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        raise typer.Exit(code=0)
 
     return create_row(
         session,
@@ -638,9 +626,6 @@ def add_company() -> None:
     """Interactively add a single company record (standalone, no position/project required)."""
     with get_session() as session:
         company = _resolve_company(session)
-        # if not _confirm_final_write():
-        #     console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        #     raise typer.Exit(code=0)
         company_id = company.company_id
 
     console.print(f"[green]Done! Company ID: {company_id}[/green]")
@@ -650,9 +635,6 @@ def add_school() -> None:
     """Interactively add a single school record (standalone, no degree/project required)."""
     with get_session() as session:
         school = _resolve_school(session)
-        # if not _confirm_final_write():
-        #     console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        #     raise typer.Exit(code=0)
         school_id = school.school_id
 
     console.print(f"[green]Done! School ID: {school_id}[/green]")
@@ -663,9 +645,6 @@ def add_position() -> None:
     with get_session() as session:
         company = _select_existing_company(session)
         position = _resolve_position(session, company)
-        # if not _confirm_final_write():
-        #     console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        #     raise typer.Exit(code=0)
         position_id = position.position_id
 
     console.print(f"[green]Done! Position ID: {position_id}[/green]")
@@ -677,9 +656,6 @@ def add_degree() -> None:
     with get_session() as session:
         school = _select_existing_school(session)
         degree = _resolve_degree(session, school)
-        # if not _confirm_final_write():
-        #     console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        #     raise typer.Exit(code=0)
         degree_id = degree.degree_id
 
     console.print(f"[green]Done! Degree ID: {degree_id}[/green]")
@@ -734,10 +710,6 @@ def _resolve_position(session, company: CompanyORM) -> PositionORM:
     start_dt = _prompt_date("Start date (YYYY-MM-DD)")
     end_dt = _prompt_date("End date (YYYY-MM-DD, leave blank for present)", allow_blank=True)
     responsibility, responsibility_source = _draft_responsibility()
-
-    if not _confirm_final_write():
-        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        raise typer.Exit(code=0)
 
     return create_row(
         session,
@@ -836,10 +808,6 @@ def _resolve_degree(session, school: "SchoolORM") -> "DegreeORM":
 
     degree_honors, degree_awards = _resolve_degree_achievements()
 
-    if not _confirm_final_write():
-        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        raise typer.Exit(code=0)
-
     return create_row(
         session,
         DegreeORM,
@@ -857,7 +825,7 @@ def _resolve_degree(session, school: "SchoolORM") -> "DegreeORM":
         },
     )
 
-def _select_existing_degree_flat(session):
+def _select_existing_degree(session):
     """No functional change from earlier versions -- add-project unaffected.
     See module docstring for the display-semantics note on degree_name."""
     rows = (
@@ -890,7 +858,7 @@ def _resolve_project(
     session,
     position_id: Optional[UUID],
     degree_id: Optional[UUID],
-) -> ProjectORM:
+) -> ProjectORM:    
     project_name = typer.prompt("Project name")
     start_dt = _prompt_date("Project start date (YYYY-MM-DD)")
     end_dt = _prompt_date("Project end date (YYYY-MM-DD, leave blank)", allow_blank=True)
@@ -920,10 +888,6 @@ def _resolve_project(
 
         project_context = _confirm_or_edit(response, "Project background narrative", PROBLEM_REGENERATE_SYSTEM_PROMPT)
 
-        if not _confirm_final_write():
-            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-            raise typer.Exit(code=0)
-
         return create_row(
                 session,
                 ProjectORM,
@@ -937,8 +901,6 @@ def _resolve_project(
                     "project_context_source": path,
                 },
             )
-
-
 
 # ---------------------------------------------------------------------------
 # add-project command (v1.9: flat position/degree selector first)
@@ -957,26 +919,19 @@ def add_project() -> None:
 
     with get_session() as session:
         if track == "work":
-            position = _select_existing_position_flat(session)
+            position = _select_existing_position(session)
             if position is None:
                 company = _resolve_company(session)
                 position = _resolve_position(session, company)
             project = _resolve_project(session, position_id=position.position_id, degree_id=None)
         else:
-            degree = _select_existing_degree_flat(session)
+            degree = _select_existing_degree(session)
             if degree is None:
                 school = _resolve_school(session)
                 degree = _resolve_degree(session, school)
             project = _resolve_project(session, position_id=None, degree_id=degree.degree_id)
 
-        # if not _confirm_final_write():
-        #     console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        #     raise typer.Exit(code=0)
-
         project_id = project.project_id
-        # transaction commits automatically on successful exit of get_session().
-        # NOTE: add-project never calls fill_pending_support_levels() --
-        # governance rows never exist for anything but claims.
 
     console.print(f"[green]Done! New project ID: {project_id}[/green]")
     return project_id
@@ -985,68 +940,6 @@ def add_project() -> None:
 # add-claim: interactive project selector (flat, join-based, single menu --
 # Institution / Role / Project columns only)
 # ---------------------------------------------------------------------------
-
-def _select_project_interactively(session) -> ProjectORM:
-    """
-    Shows every existing project in ONE flat numbered menu, regardless of
-    whether it sits under the work track (company -> position -> project)
-    or the education track (school -> degree -> project). Replaces the
-    old multi-step drill-down (pick track, then company/school, then
-    position/degree, then project) with a single selection step.
-
-    Since core/db.py's ORM models only define Column(ForeignKey(...)) and
-    no relationship(), cross-table lookups can't use attribute-chain
-    access (e.g. project.position.company) -- this runs two explicit JOIN
-    queries instead: one for the work track (project+position+company) and
-    one for the education track (project+degree+school). Results from
-    both are merged into a single list before being shown.
-
-    Each row displays exactly three columns:
-    - Institution: company_name (work track) or school_name (education track)
-    - Role: position.title (work track) or degree.degree_name (education track)
-    - Project: project_name
-    """
-    work_rows = (
-        session.query(ProjectORM, PositionORM, CompanyORM)
-        .join(PositionORM, ProjectORM.position_id == PositionORM.position_id)
-        .join(CompanyORM, PositionORM.company_id == CompanyORM.company_id)
-        .all()
-    )
-    education_rows = (
-        session.query(ProjectORM, DegreeORM, SchoolORM)
-        .join(DegreeORM, ProjectORM.degree_id == DegreeORM.degree_id)
-        .join(SchoolORM, DegreeORM.school_id == SchoolORM.school_id)
-        .all()
-    )
-
-    combined: list[tuple[ProjectORM, str, str]] = []
-    for project, position, company in work_rows:
-        combined.append((project, company.company_name, position.title))
-    for project, degree, school in education_rows:
-        combined.append((project, school.school_name, degree.degree_name))
-
-    if not combined:
-        console.print("[red]No project records found -- please run add-project first[/red]")
-        raise typer.Exit(code=1)
-
-    combined.sort(key=lambda row: (row[1] or "", row[0].project_name or ""))
-
-    table = Table(title="Select a project")
-    table.add_column("#")
-    table.add_column("Company/School")
-    table.add_column("Role/Degree")
-    table.add_column("Project")
-    for idx, (project, institution, role) in enumerate(combined, start=1):
-        table.add_row(
-            str(idx),
-            institution or "",
-            role or "",
-            project.project_name or "",
-        )
-    console.print(table)
-
-    choice = typer.prompt("Select a number", type=int)
-    return combined[choice - 1][0]
 
 # ---------------------------------------------------------------------------
 # add-claim: Step 1 -- problem
@@ -1068,10 +961,6 @@ def _resolve_problem(session, project: ProjectORM, desc: str | None = None, impa
     else:
         problem_description = desc
         stakeholder_impact = impact
-
-    if not _confirm_final_write():
-        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        raise typer.Exit(code=0)
 
     return create_row(
         session,
@@ -1106,10 +995,6 @@ def _resolve_action(session, problem: ProblemORM, desc: str | None = None, scope
         description = desc
         role_scope = scope
 
-    if not _confirm_final_write():
-        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        raise typer.Exit(code=0)
-
     return create_row(
         session,
         ActionORM,
@@ -1135,10 +1020,6 @@ def _resolve_claim(session, action: ActionORM, desc: str | None = None) -> Claim
         description = _confirm_or_edit(response, "Claim statement", CLAIM_REGENERATE_SYSTEM_PROMPT)
     else:
         description = desc
-
-    if not _confirm_final_write():
-        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        raise typer.Exit(code=0)
 
     return create_row(
         session,
@@ -1197,10 +1078,6 @@ def _resolve_metrics(session, claim: ClaimORM) -> list[MetricORM]:
     drafts = parse_metric_response(response.text)
     finalized = _review_metric_drafts(drafts)
 
-    if not _confirm_final_write():
-        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        raise typer.Exit(code=0)
-
     metric_orms: list[MetricORM] = []
     for m_desc, m_value, confidence in finalized:
         metric_orms.append(
@@ -1220,6 +1097,14 @@ def _resolve_metrics(session, claim: ClaimORM) -> list[MetricORM]:
 # ---------------------------------------------------------------------------
 # add-claim: Step 4 -- evidence
 # ---------------------------------------------------------------------------
+EVIDENCE_TYPE_TO_LEVEL: list[tuple[str, str]] = [
+    ("Formal documentation (contract / official report / system screenshot)", "L1"),
+    ("Third-party verification (manager review / client feedback / formal evaluation)", "L1"),
+    ("Data record (analytics report / system log / dashboard)", "L2"),
+    ("Internal team documentation (meeting notes / email / Slack conversation)", "L2"),
+    ("Verbal account / recollection (no written record, memory only)", "L3"),
+    ("Inference / estimate (reasonable inference without direct evidence)", "L4"),
+]
 
 def _select_evidence_type() -> tuple[str, str]:
     columns = ["Evidence type", "Corresponding level"]
@@ -1242,10 +1127,6 @@ def _resolve_one_evidence(session, claim: ClaimORM, project: ProjectORM | None =
             "Evidence location/link? (e.g. file path, URL, optional)", default="", show_default=False
         )
     console.print(f"[dim]Corresponding evidence level: {evidence_level} (auto-derived from evidence type)[/dim]")
-
-    if not _confirm_final_write():
-        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        raise typer.Exit(code=0)
 
     return create_row(
         session,
@@ -1334,10 +1215,6 @@ def _resolve_tags(
     proposed = parse_tag_response(response.text)
     final_tags = _confirm_or_edit_tags(proposed)
 
-    if not _confirm_final_write():
-        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        raise typer.Exit(code=0)
-
     tag_orms: list[TagORM] = []
     for tag_name, tag_category in final_tags:
         tag = select_or_create(
@@ -1373,10 +1250,6 @@ def _resolve_governance(session, claim: ClaimORM) -> GovernanceORM:
         "Allow this claim into the CV-generation candidate pool?", default=True
     )
 
-    if not _confirm_final_write():
-        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-        raise typer.Exit(code=0)
-
     return create_row(
         session,
         GovernanceORM,
@@ -1393,19 +1266,54 @@ def _resolve_governance(session, claim: ClaimORM) -> GovernanceORM:
 # add-claim command
 # ---------------------------------------------------------------------------
 
-def _find_proejct(session, project_id: str | None = None) -> ProjectORM:
-    with get_session() as session:
-        if project_id is not None:
-            project = session.get(ProjectORM, project_id)
-            if project is None:
-                console.print(f"[red]No project found for project_id: {project_id}[/red]")
-                raise typer.Exit(code=1)
-        else:
-            project = _select_project_interactively(session)
+def _select_existing_project(session) -> Optional[ProjectORM]:
+    rows = (
+        session.query(
+            CompanyORM.company_name.label("institution"),
+            PositionORM.title.label("role"), 
+            ProjectORM
+        )
+        .join(PositionORM, ProjectORM.position_id == PositionORM.position_id)
+        .join(CompanyORM, PositionORM.company_id == CompanyORM.company_id)
+        .all()
+    )
+    rows = rows + (
+        session.query(
+            SchoolORM.school_name.label("institution"),
+            DegreeORM.degree_name.label("role"), 
+            ProjectORM
+        )
+        .join(DegreeORM, ProjectORM.degree_id == DegreeORM.degree_id)
+        .join(SchoolORM, DegreeORM.school_id == SchoolORM.school_id)
+        .all()
+    )
+    if not rows:
+        return None
+    
+    table = Table(title="Select an existing project") #, or create a new one")
+    table.add_column("#")
+    table.add_column("Institution")
+    table.add_column("Role")
+    table.add_column("Project")
+    # table.add_row("0", "[Create new]", "", "")
+    for idx, row in enumerate(rows, start=1):
+        table.add_row(str(idx), row.institution or "", row.role or "", row.ProjectORM.project_name or "")
+    console.print(table)
 
-    console.print(f"[bold]Selected project: {project.project_name}[/bold]\n")
-    return project
+    choice = typer.prompt("Select a number", type=int)
+    if choice == 0:
+        return None
+    return rows[choice - 1].ProjectORM
 
+def _find_project(
+    session,
+    project_id: UUID = typer.Option(
+        None,
+        "--project-id",
+        help="UUID of the project to add a claim to. If omitted, an interactive selector is shown.",
+    ),   
+) -> ProjectORM:
+    return session.query(ProjectORM).filter(ProjectORM.project_id == project_id)
 
 @app.command("add-claim")
 def add_claim(
@@ -1417,8 +1325,8 @@ def add_claim(
 ) -> None:
     """Interactively add a problem -> action -> claim -> metric(s) -> evidence(s) -> tag(s) -> governance record."""
     claim_id: Optional[UUID] = None
-    project = _find_proejct(project_id)
     with get_session() as session:
+        project = _find_project(session, project_id) if project_id else _select_existing_project(session)
         problem = _resolve_problem(session, project)
         action = _resolve_action(session, problem)
         claim = _resolve_claim(session, action)
@@ -1503,13 +1411,7 @@ def add_claims(
     """Bulk add claims to database through source files or URLs."""
     project: ProjectORM = None
     with get_session() as session:
-        if project_id is not None:
-            project = session.get(ProjectORM, project_id)
-            if project is None:
-                console.print(f"[red]No project found for project_id: {project_id}[/red]")
-                raise typer.Exit(code=1)
-        else:
-            project = _select_project_interactively(session)
+        project = _find_project(session, project_id) if project_id else _select_existing_project(session)
 
     raw_claims = _resolve_claims(project) 
     for idx, raw_claim in enumerate(raw_claims):
