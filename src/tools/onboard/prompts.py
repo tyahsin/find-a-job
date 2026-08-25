@@ -182,7 +182,7 @@ Purpose of this summary: describe the background/context in which a
 project arose (project.project_context) -- what situation produced this
 project and what kind of project it is. This is NOT an outcome narrative
 (outcomes are handled separately via problem/action/result_claim).
-Suggested length: 2 sentences at most and less than 25 words.
+CRITICAL RULE -- length: 2 sentences at most and less than 25 words.
 """
 
 def build_project_context_prompt_from_source(source_text: str) -> str:
@@ -532,6 +532,9 @@ def parse_metric_response(raw_text: str) -> list[tuple[str, str]]:
         results.append((metric_description, metric_value))
     return results
 
+# ---------------------------------------------------------------------------
+# claims extraction (Aug 2026 update)
+# ---------------------------------------------------------------------------
 
 CLAIMS_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
 Purpose of this task: extract discrete, resume-ready achievement claims from 
@@ -611,3 +614,70 @@ organize it into a list of Json arrays as system prompt suggested:
 ---
 
 Output the list (plain text, no preamble):"""
+
+# ---------------------------------------------------------------------------
+# regenerate (Aug 2026 update)
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# regenerate (add-claim: single-field regeneration from previous draft +
+# steering note, used by problem/action/claim's own confirm loop)
+# ---------------------------------------------------------------------------
+# Design: reuse each field's existing SYSTEM_PROMPT (which already carries
+# _BASE_SYSTEM_RULES + that field's purpose/boundary rules) as the base,
+# and append a regenerate-specific task block on top. This guarantees a
+# steering_note can never push a field across its boundary (e.g. asking
+# problem_description to describe a solution) -- the boundary rules from
+# the original drafting prompt stay in force during regenerate too.
+
+_REGENERATE_TASK_BLOCK = """
+You are now REGENERATING this field, not drafting it from scratch. The
+user was not fully satisfied with a previous draft and has given you a
+short steering note describing what should be different this time.
+
+You are given:
+- previous_output: the current version of this field's text
+- steering_note: the user's instruction on how to improve it
+
+Regenerate-specific rules (in addition to every rule above, which still
+apply in full -- previous_output is now your "raw material" for those
+rules):
+1. previous_output is your ONLY source of facts. All rules above about
+   not adding facts/scope/achievement apply against previous_output, not
+   against any new information.
+2. steering_note may ONLY request a different PRESENTATION of the same
+   underlying facts already in previous_output -- tone, length,
+   directness, word choice, sentence structure -- or an explicit factual
+   correction the user names (e.g. "change 'led' to 'supported'"). It may
+   NOT be used to add a new fact, or to move content across this field's
+   boundary into another field's territory (see the purpose/boundary
+   rules above for what belongs in this field).
+3. If steering_note conflicts with rule 1 or 2, or with this field's
+   boundary rule above, follow those rules instead and produce the
+   closest faithful revision rather than complying literally.
+
+Output format: output ONLY the revised sentence, plain text, no preamble,
+no quotation marks, no field name prefix.
+"""
+
+RESPONSIBILITY_REGENERATE_SYSTEM_PROMPT = RESPONSIBILITY_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
+DEGREE_DESCRIPTION_REGENERATE_SYSTEM_PROMPT = DEGREE_DESCRIPTION_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
+PROJECT_CONTEXT_REGENERATE_SYSTEM_PROMPT = PROJECT_CONTEXT_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
+PROBLEM_REGENERATE_SYSTEM_PROMPT = PROBLEM_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
+ACTION_REGENERATE_SYSTEM_PROMPT = ACTION_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
+CLAIM_REGENERATE_SYSTEM_PROMPT = CLAIM_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
+
+
+def build_regenerate_prompt(previous_output: str, steering_note: str) -> str:
+    """
+    Shared user-prompt builder for all three regenerate calls
+    (problem/action/claim). The system prompt (PROBLEM/ACTION/
+    CLAIM_REGENERATE_SYSTEM_PROMPT) already carries the field-specific
+    boundary, so this template stays identical across all three fields.
+    """
+    return f"""# Previous draft (the user was not satisfied with this)
+{previous_output}
+
+# User's steering note for this regeneration
+{steering_note}
+
+Output the revised sentence:"""

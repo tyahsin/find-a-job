@@ -129,6 +129,12 @@ def _parse_overrides(raw_value: str, field_order: list[str]) -> tuple[dict, list
         overrides[key] = value
     return overrides, unknown_keys
 
+def confirm_or_edit(
+        
+): 
+    """
+    """
+
 
 def confirm_fields_once(
     fields: dict,

@@ -138,6 +138,7 @@ from core.db import (
 )
 from core.source_reader import FileReadError, UnsupportedFileTypeError, read_source
 from core.llm_client import get_llm_client, LLMResponse
+from core.llm_reviewer import parse_review_input
 from onboard.prompts import *
 
 app = typer.Typer(help="Add experience entries to database.")
@@ -162,16 +163,41 @@ def _prompt_date(label: str, allow_blank: bool = False) -> Optional[date]:
         except ValueError:
             console.print("[red]Invalid date format, please use YYYY-MM-DD[/red]")
 
-def _confirm_or_edit(draft: str, label: str) -> str:
+def _confirm_or_edit(draft, label: str, system_prompt: str) -> str:
     console.print(f"\n[bold]{label} (LLM draft)[/bold]")
-    console.print(draft)
-    edited = typer.prompt(
-        "Press Enter to accept, or type new text to override",
-        default="",
-        show_default=False,
-    )
-    return edited.strip() if edited.strip() else draft
+    while True:
+        console.print(draft.text)
+        raw = input(
+            "  Accept this writing? (Enter to accept / 'r' or 'r <text>' to regenerate / "
+            "'o <text>' to override): "
+        ).strip()
+        decision = parse_review_input(raw)
 
+        if decision.action == "regenerate":
+            if system_prompt is None:
+                console.print(f"[red]  Missing REGENERATE_SYSTEM_PROMPT; regeneration not supported. [/red]")
+                break
+            console.print(f"\n[bold]  Regenerating...[/bold]")
+            user_prompt = build_regenerate_prompt(
+                previous_output=draft.text,
+                steering_note=decision.value,
+            )
+            draft = get_llm_client().generate_text(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+            continue
+
+        if decision.action == "override":
+            console.print(f"\n  [green]-> Using manually entered text[/green]")
+            return decision.value
+
+        if decision.action == "accept":
+            console.print(f"\n  [green]-> Using this LLM-regenerated text[/green]")
+            return draft.text
+
+        console.print(f"\n[red][Error] {decision.value}[/red]")
+    
 def _select_from_fuzzy_candidates(candidates, label_field: str):
     """
     Shows fuzzy match candidates and lets the user pick one, or choose to
@@ -639,7 +665,8 @@ def add_degree() -> None:
 
 def _draft_responsibility() -> tuple[str, Optional[str]]:
     """Returns (responsibility_text, responsibility_source)."""
-    client = get_llm_client()
+    path: str = None
+    description: str = None
     has_source = typer.confirm(
         "Do you have a source document to link the responsibility description to (file path or URL)?",
         default=False,
@@ -648,25 +675,22 @@ def _draft_responsibility() -> tuple[str, Optional[str]]:
         while True:
             path = typer.prompt("Enter file path (.txt / .md / .pdf) or URL")
             try:
-                source_text = read_source(path)
+                description = read_source(path)
                 break
             except (FileReadError, UnsupportedFileTypeError) as exc:
                 console.print(f"[red]{exc}[/red]")
+    else:
+        description = typer.prompt("Briefly describe the scope of responsibilities for this position")
 
-        response = client.generate_text(
-            system_prompt=RESPONSIBILITY_SYSTEM_PROMPT,
-            user_prompt=build_responsibility_prompt_from_source(source_text),
-        )
-        final_text = _confirm_or_edit(response.text, "Responsibility summary")
-        return final_text, path
-
-    description = typer.prompt("Briefly describe the scope of responsibilities for this position")
+    client = get_llm_client()
     response = client.generate_text(
         system_prompt=RESPONSIBILITY_SYSTEM_PROMPT,
-        user_prompt=build_responsibility_prompt_from_description(description),
+        user_prompt=build_responsibility_prompt_from_source(description),
     )
-    final_text = _confirm_or_edit(response.text, "Responsibility summary")
-    return final_text, None
+    final_text = _confirm_or_edit(response, "Responsibility summary", RESPONSIBILITY_REGENERATE_SYSTEM_PROMPT)
+    return final_text, path
+
+
 
 def _resolve_position(session, company: CompanyORM) -> PositionORM:
     existing = list_rows(session, PositionORM, company_id=company.company_id)
@@ -704,7 +728,8 @@ def _draft_degree_description() -> tuple[str, Optional[str]]:
     """Returns (description_text, description_source). Mirrors
     _draft_responsibility() exactly -- source-file-or-typed-description
     dual entry point, LLM draft + _confirm_or_edit() gate."""
-    client = get_llm_client()
+    path: str = None
+    description: str = None
     has_source = typer.confirm(
         "Do you have a source document to base the degree description on (file path or URL)?",
         default=False,
@@ -713,25 +738,21 @@ def _draft_degree_description() -> tuple[str, Optional[str]]:
         while True:
             path = typer.prompt("Enter file path (.txt / .md / .pdf) or URL")
             try:
-                source_text = read_source(path)
+                description = read_source(path)
                 break
             except (FileReadError, UnsupportedFileTypeError) as exc:
                 console.print(f"[red]{exc}[/red]")
+    else:
+        description = typer.prompt("Briefly describe the focus/scope of this degree program")
 
+        client = get_llm_client()
         response = client.generate_text(
             system_prompt=DEGREE_DESCRIPTION_SYSTEM_PROMPT,
-            user_prompt=build_degree_description_prompt_from_source(source_text),
+            user_prompt=build_degree_description_prompt_from_source(description),
         )
-        final_text = _confirm_or_edit(response.text, "Degree description")
+        final_text = _confirm_or_edit(response, "Degree description", DEGREE_DESCRIPTION_REGENERATE_SYSTEM_PROMPT)
         return final_text, path
-
-    description = typer.prompt("Briefly describe the focus/scope of this degree program")
-    response = client.generate_text(
-        system_prompt=DEGREE_DESCRIPTION_SYSTEM_PROMPT,
-        user_prompt=build_degree_description_prompt_from_description(description),
-    )
-    final_text = _confirm_or_edit(response.text, "Degree description")
-    return final_text, None
+    
 
 def _resolve_degree_achievements():
     """Repeatedly prompts for degree_honors or degree_wards. Enter on a
@@ -841,7 +862,8 @@ def _resolve_project(
     start_dt = _prompt_date("Project start date (YYYY-MM-DD)")
     end_dt = _prompt_date("Project end date (YYYY-MM-DD, leave blank)", allow_blank=True)
 
-    client = get_llm_client()
+    path: str = None
+    description: str = None
     has_source = typer.confirm(
         "Do you have a source document to link the project description to (file path or URL)?",
         default=False,
@@ -850,17 +872,20 @@ def _resolve_project(
         while True:
             path = typer.prompt("Enter file path (.txt / .md / .pdf) or URL")
             try:
-                source_text = read_source(path)
+                description = read_source(path)
                 break
             except (FileReadError, UnsupportedFileTypeError) as exc:
                 console.print(f"[red]{exc}[/red]")
+    else:
+        description = typer.prompt("Briefly describe the scope of responsibilities for this position")
 
+        client = get_llm_client()
         response = client.generate_text(
             system_prompt=PROJECT_CONTEXT_SYSTEM_PROMPT,
-            user_prompt=build_project_context_prompt_from_source(source_text),
+            user_prompt=build_project_context_prompt_from_source(description),
         )
 
-        project_context = _confirm_or_edit(response.text, "Project background narrative")
+        project_context = _confirm_or_edit(response, "Project background narrative", PROBLEM_REGENERATE_SYSTEM_PROMPT)
 
         return create_row(
                 session,
@@ -875,28 +900,8 @@ def _resolve_project(
                     "project_context_source": path,
                 },
             )
+
     
-    description = typer.prompt("Briefly describe the scope of responsibilities for this position")
-
-    response = client.generate_text(
-        system_prompt=PROJECT_CONTEXT_SYSTEM_PROMPT,
-        user_prompt=build_project_context_prompt_from_description(description),
-    )
-
-    project_context = _confirm_or_edit(response.text, "Project background narrative")
-
-    return create_row(
-        session,
-        ProjectORM,
-        {
-            "position_id": position_id,
-            "degree_id": degree_id,
-            "project_name": project_name,
-            "start_date": start_dt,
-            "end_date": end_dt,
-            "project_context": project_context,
-        },
-    )
 
 # ---------------------------------------------------------------------------
 # Step 4: final confirmation
@@ -1024,7 +1029,7 @@ def _resolve_problem(session, project: ProjectORM) -> ProblemORM:
         system_prompt=PROBLEM_SYSTEM_PROMPT,
         user_prompt=build_problem_prompt(description),
     )
-    problem_description = _confirm_or_edit(response.text, "Problem statement")
+    problem_description = _confirm_or_edit(response, "Problem statement", PROBLEM_REGENERATE_SYSTEM_PROMPT)
 
     stakeholder_impact = typer.prompt(
         "Which stakeholders were affected by this problem? (optional)", default="", show_default=False
@@ -1051,7 +1056,7 @@ def _resolve_action(session, problem: ProblemORM) -> ActionORM:
         system_prompt=ACTION_SYSTEM_PROMPT,
         user_prompt=build_action_prompt(description),
     )
-    action_description = _confirm_or_edit(response.text, "Action statement")
+    action_description = _confirm_or_edit(response, "Action statement", ACTION_REGENERATE_SYSTEM_PROMPT)
 
     role_scope = _select_from_menu(
         ROLE_SCOPE_OPTIONS,
@@ -1080,7 +1085,7 @@ def _resolve_claim(session, action: ActionORM) -> ClaimORM:
         system_prompt=CLAIM_SYSTEM_PROMPT,
         user_prompt=build_result_claim_prompt(raw_input_text),
     )
-    description = _confirm_or_edit(response.text, "Result statement")
+    description = _confirm_or_edit(response, "Claim statement", CLAIM_REGENERATE_SYSTEM_PROMPT)
 
     return create_row(
         session,
@@ -1096,12 +1101,12 @@ def _resolve_claim(session, action: ActionORM) -> ClaimORM:
 # ---------------------------------------------------------------------------
 
 def _review_metric_drafts(drafts: list[tuple[str, str]]) -> list[tuple[str, str, str]]:
-    console.print("\n[bold]Metric drafts (extracted by LLM from the result statement)[/bold]")
+    console.print("\n[bold]metric_description and metric_value (LLM draft)[/bold]")
     if drafts:
         table = Table()
         table.add_column("#")
-        table.add_column("Description")
-        table.add_column("Value")
+        table.add_column("Description (what this number represents)")
+        table.add_column("Value (what is the difference in numbers/quantifiable statements)")
         for idx, (m_desc, m_value) in enumerate(drafts, start=1):
             table.add_row(str(idx), m_desc, m_value)
         console.print(table)
@@ -1109,12 +1114,12 @@ def _review_metric_drafts(drafts: list[tuple[str, str]]) -> list[tuple[str, str,
         console.print("[dim](LLM did not detect any quantifiable metrics)[/dim]")
 
     finalized: list[tuple[str, str, str, str]] = []
-    for m_desc, m_value in drafts:
-        keep = typer.confirm(f'Keep the metric "{m_desc}: {m_value}"?', default=True)
+    for idx, (m_desc, m_value) in enumerate(drafts, start=1):
+        keep = typer.confirm(f'Keep metric no. {idx}?', default=True)
         if not keep:
             continue
-        edited_desc = typer.prompt("Confirm description writing? (Press Enter to accept, or type new text to override) ", default=m_desc)
-        edited_value = typer.prompt("Confirm value writing? (Press Enter to accept, or type new text to override) ", default=m_value)
+        edited_desc = typer.prompt("Press Enter to accept, or type new text to override", default=m_desc)
+        edited_value = typer.prompt("Press Enter to accept, or type new text to override", default=m_value)
         confidence = _select_from_menu(
             METRIC_CONFIDENCE_OPTIONS,
             title=f'Confidence level for "{edited_desc}"?',
@@ -1124,7 +1129,7 @@ def _review_metric_drafts(drafts: list[tuple[str, str]]) -> list[tuple[str, str,
 
     while typer.confirm("Manually add another metric? (add anything the LLM missed here)", default=False):
         m_desc = typer.prompt("Description (what this number represents)")
-        m_value = typer.prompt("Value")
+        m_value = typer.prompt("Value (what is the difference in numbers/quantifiable statements)")
         confidence = _select_from_menu(
             METRIC_CONFIDENCE_OPTIONS,
             title=f'Confidence level for "{m_desc}"?',
@@ -1178,11 +1183,18 @@ def _select_evidence_type() -> tuple[str, str]:
     evidence_level = EVIDENCE_TYPE_TO_LEVEL[evidence_type]
     return evidence_type, evidence_level
 
-def _resolve_one_evidence(session, claim: ClaimORM) -> EvidenceORM:
+def _resolve_one_evidence(session, claim: ClaimORM, project: ProjectORM | None = None) -> EvidenceORM:
     evidence_type, evidence_level = _select_evidence_type()
-    evidence_location = typer.prompt(
-        "Evidence location/link? (e.g. file path, URL, optional)", default="", show_default=False
-    )
+    evidence_location: str = None
+    if project:
+        is_from_project_context_source = typer.prompt(f"Would you like to use {project.project_context_source} as evidence source?", default="Y", show_default=False)
+        evidence_location = project.project_context_source if is_from_project_context_source else typer.prompt(
+            "Any other evidence location/link? (e.g. file path, URL, optional)", default="", show_default=False
+        )
+    else:
+        evidence_location = typer.prompt(
+            "Evidence location/link? (e.g. file path, URL, optional)", default="", show_default=False
+        )
     console.print(f"[dim]Corresponding evidence level: {evidence_level} (auto-derived from evidence type)[/dim]")
 
     return create_row(
@@ -1191,15 +1203,15 @@ def _resolve_one_evidence(session, claim: ClaimORM) -> EvidenceORM:
         {
             "claim_id": claim.claim_id,
             "evidence_type": evidence_type,
-            "evidence_location": evidence_location or None,
+            "evidence_location": evidence_location, # or None,
             "evidence_level": evidence_level,
         },
     )
 
-def _resolve_evidences(session, claim: ClaimORM) -> list[EvidenceORM]:
-    evidences: list[EvidenceORM] = [_resolve_one_evidence(session, claim)]
+def _resolve_evidences(session, claim: ClaimORM, project: ProjectORM | None = None) -> list[EvidenceORM]:
+    evidences: list[EvidenceORM] = [_resolve_one_evidence(session, claim, project)]
     while typer.confirm("Any other evidence to add for this claim?", default=False):
-        evidences.append(_resolve_one_evidence(session, claim))
+        evidences.append(_resolve_one_evidence(session, claim, project))
     return evidences
 
 # ---------------------------------------------------------------------------
@@ -1224,7 +1236,6 @@ def _confirm_or_edit_tags(proposed: list[tuple[str, str]]) -> list[tuple[str, st
     if not edited.strip():
         return proposed
 
-    valid_categories = {"skill", "domain", "job_function"}
     result: list[tuple[str, str]] = []
     for chunk in edited.split(","):
         chunk = chunk.strip()
@@ -1233,7 +1244,7 @@ def _confirm_or_edit_tags(proposed: list[tuple[str, str]]) -> list[tuple[str, st
         name_part, _, category_part = chunk.partition("|")
         name = name_part.strip()
         category = category_part.strip().lower()
-        if name and category in valid_categories:
+        if name and category in TAG_CATEOGRY:
             result.append((name, category))
     return result if result else proposed
 
@@ -1346,9 +1357,6 @@ def add_claim(
 ) -> None:
     """Interactively add a problem -> action -> claim -> metric(s) -> evidence(s) -> tag(s) -> governance record."""
     claim_id: Optional[UUID] = None
-    evidence_ids: list[UUID] = []
-    metric_summaries: list[str] = []
-    tag_names: list[str] = []
 
     with get_session() as session:
         if project_id is not None:
@@ -1364,9 +1372,9 @@ def add_claim(
         problem = _resolve_problem(session, project)
         action = _resolve_action(session, problem)
         claim = _resolve_claim(session, action)
-        metrics = _resolve_metrics(session, claim)
+        _resolve_metrics(session, claim)
         evidences = _resolve_evidences(session, claim)
-        tags = _resolve_tags(session, claim, problem, action, evidences, project)
+        _resolve_tags(session, claim, problem, action, evidences, project)
         _resolve_governance(session, claim)
 
         if not _confirm_final_write():
@@ -1374,19 +1382,10 @@ def add_claim(
             raise typer.Exit(code=0)
 
         claim_id = claim.claim_id
-        # evidence_ids = [evidence.evidence_id for evidence in evidences]
-        # metric_summaries = [f"{m.metric_label}: {m.metric_value}" for m in metrics]
-        # tag_names = [tag.tag_name for tag in tags]
 
     fill_pending_support_levels()
 
     console.print(f"[green]Done! New claim ID: {claim_id}[/green]")
-    # console.print(f"[green]Evidence IDs ({len(evidence_ids)} total): {', '.join(str(e) for e in evidence_ids)}[/green]")
-    # if metric_summaries:
-    #     console.print(f"[green]Metrics: {'; '.join(metric_summaries)}[/green]")
-    # if tag_names:
-    #     console.print(f"[green]Tags: {', '.join(tag_names)}[/green]")
-    # console.print("[green]Governance support_level: computed and filled in.[/green]")
 
 # ---------------------------------------------------------------------------
 # add-project-claim: from project to claims to all corresponding columns
@@ -1418,7 +1417,7 @@ def _resolve_claims(project: ProjectORM) -> list:
 
     if source is not None:
          has_source = typer.confirm(
-                f"There's a source is your project. Would you like to derive claims from {source}?",
+                f"Found a source is your project. Would you like to derive claims from {source}?",
                 default=True,
             )     
          path = source
@@ -1431,7 +1430,6 @@ def _resolve_claims(project: ProjectORM) -> list:
         
     if has_source:
         while True:
-            # path = typer.prompt("Enter a new file path (.txt / .md / .pdf) or URL")
             try:
                 source_text = read_source(path)
                 break
@@ -1449,7 +1447,6 @@ def _resolve_claims(project: ProjectORM) -> list:
     return raw_claims
 
 
-@app.command("add-claims")
 def add_claims(
         project_id: Optional[UUID] = typer.Option(
         None,
@@ -1458,7 +1455,7 @@ def add_claims(
     ),
 ):
     """Bulk add claims to database through source files or URLs."""
-
+    project: ProjectORM = None
     with get_session() as session:
         if project_id is not None:
             project = session.get(ProjectORM, project_id)
@@ -1472,7 +1469,12 @@ def add_claims(
     for i, raw_claim in enumerate(raw_claims):
         confirmed = {}
         for key, val in raw_claim.items(): 
-            confirmed_val = _confirm_or_edit(val, key)
+            regenereate_system_promt = \
+                None if "description" not in key \
+                else PROBLEM_REGENERATE_SYSTEM_PROMPT if "problem" in key \
+                else ACTION_REGENERATE_SYSTEM_PROMPT if "action" in key \
+                else CLAIM_REGENERATE_SYSTEM_PROMPT
+            confirmed_val = _confirm_or_edit(val, key, regenereate_system_promt)
             confirmed[key] = confirmed_val
 
         with get_session() as session:
@@ -1503,7 +1505,7 @@ def add_claims(
                 }
             )
             _resolve_metrics(session, claim)
-            evidences = _resolve_evidences(session, claim)
+            evidences = _resolve_evidences(session, claim, project)
             _resolve_tags(session, claim, problem, action, evidences, project)
             _resolve_governance(session, claim)
 

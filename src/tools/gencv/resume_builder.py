@@ -291,7 +291,6 @@ def build_cv_yaml(
     designated_name=None,
     headline=None,
     description_overrides=None,
-    # summary=None,
 ):
     """(v17, renamed from build_resume_yaml) 組出 rendercv 看得懂的 cv YAML
     （只含 cv: 區塊），寫入 output_path。
@@ -325,11 +324,11 @@ def build_cv_yaml(
 
     sections = {}
     sections["summary"] = [summary_entry]
-    sections["education"] = education_entries
+    sections["skills"] = skills_entries
     sections["experience"] = experience_entries
+    sections["education"] = education_entries
     if project_entries:
         sections["projects"] = project_entries
-    sections["skills"] = skills_entries
 
     cv_block["sections"] = sections
 
@@ -368,13 +367,23 @@ def render_pdf(
     locale_path = locale_path or TEMPLATES_DIR / "locale.yaml"
     settings_path = settings_path or TEMPLATES_DIR / "settings.yaml"
 
-    for f in [cv_yaml_path, design_path, locale_path, settings_path]:
-        if not f.exists():
-            print(f"[ERROR] 找不到檔案: {f}", file=sys.stderr)
-            sys.exit(1)
-
     pdf_path = pathlib.Path(pdf_path)
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # save .yaml for reference 
+    yaml_data = {}
+    yaml_path = pdf_path.parent / pdf_path.split("/")[-1].replace("pdf", "yaml")
+
+    for file in [cv_yaml_path, design_path, locale_path, settings_path]:
+        if not file.exists():
+            print(f"[ERROR] 找不到檔案: {f}", file=sys.stderr)
+            sys.exit(1)
+        with open(file, "r", encoding='utf-8') as f:
+            data = yaml.safe_load(file)
+            if data:
+                yaml_data[file.split('/')[-1].split('.')[0]] = data
+    with open(yaml_path, "w", encoding='utf-8') as f:
+        yaml.safe_dump(yaml_data, f, default_flow_style=False)
 
     cmd = [
         "rendercv", "render", str(cv_yaml_path),

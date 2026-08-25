@@ -50,7 +50,7 @@ from gencv.experience_matcher import fetch_experience_contexts, fetch_tags_for_c
 
 MAX_CLAIMS_PER_PROJECT = 2
 
-CLAIM_RANKER_REGEN_LOG = Path("claim_ranker_regeneration_log.jsonl")
+# CLAIM_RANKER_REGEN_LOG = Path("claim_ranker_regeneration_log.jsonl")
 
 RANKER_SYSTEM_PROMPT = """You are a resume content curator. You will be given a job description and
 several candidate experience records that ALL belong to the SAME project
@@ -210,18 +210,18 @@ def _select_by_llm_judgment(candidate_ids, contexts, job_description, max_claims
     return selected, is_single_faceted
 
 
-def _log_regeneration_event(project_label, previous_method, steering_note):
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "project_label": project_label,
-        "previous_method": previous_method,
-        "steering_note": steering_note or "(none provided)",
-    }
-    try:
-        with CLAIM_RANKER_REGEN_LOG.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except OSError as exc:
-        print(f"  [Notice] Could not write regeneration observation log: {exc}")
+# def _log_regeneration_event(project_label, previous_method, steering_note):
+#     entry = {
+#         "timestamp": datetime.now(timezone.utc).isoformat(),
+#         "project_label": project_label,
+#         "previous_method": previous_method,
+#         "steering_note": steering_note or "(none provided)",
+#     }
+#     try:
+#         with CLAIM_RANKER_REGEN_LOG.open("a", encoding="utf-8") as f:
+#             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+#     except OSError as exc:
+#         print(f"  [Notice] Could not write regeneration observation log: {exc}")
 
 
 def _confirm_project_selection(project_label, kept_ids, dropped_ids, contexts, method_note,
@@ -256,7 +256,7 @@ def _confirm_project_selection(project_label, kept_ids, dropped_ids, contexts, m
 
         if decision.action == "regenerate":
             steering_note = decision.value
-            _log_regeneration_event(project_label, current_method_note, steering_note or "")
+            # _log_regeneration_event(project_label, current_method_note, steering_note or "")
 
             print("  Regenerating via LLM judgment...")
             new_kept, is_single_faceted = _select_by_llm_judgment(
