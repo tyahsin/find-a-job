@@ -42,7 +42,7 @@ CREATE TABLE company (
 -- 職位層
 CREATE TABLE position (
     position_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    company_id UUID REFERENCES company(company_id),
+    company_id UUID REFERENCES company(company_id) ON DELETE CASCADE,
     title TEXT,
     department TEXT,
     responsibility TEXT, /* precompute：定版簡述，人工或LLM生成皆存在此欄位 */
@@ -61,7 +61,7 @@ CREATE TABLE school (
 -- 學業層
 CREATE TABLE degree (
     degree_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    school_id UUID REFERENCES school(school_id),
+    school_id UUID REFERENCES school(school_id) ON DELETE CASCADE,
     degree_level TEXT, /* MA, MS, PhD, Short Program, etc. */
     degree_type TEXT, /* Major, Minor, Concentration, etc. */
     degree_name TEXT,
@@ -76,8 +76,8 @@ CREATE TABLE degree (
 -- 專案層（可掛在position或degree底下，二擇一）
 CREATE TABLE project (
     project_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    position_id UUID REFERENCES position(position_id) NULL,
-    degree_id UUID REFERENCES degree(degree_id) NULL,
+    position_id UUID REFERENCES position(position_id) ON DELETE CASCADE NULL,
+    degree_id UUID REFERENCES degree(degree_id) ON DELETE CASCADE NULL,
     project_name TEXT,
     start_date DATE,
     end_date DATE NULL,
@@ -92,7 +92,7 @@ CREATE TABLE project (
 -- 問題層
 CREATE TABLE problem (
     problem_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id UUID REFERENCES project(project_id), /* 對應哪個專案，而非公司或職位本身 */
+    project_id UUID REFERENCES project(project_id) ON DELETE CASCADE, /* 對應哪個專案，而非公司或職位本身 */
     problem_description TEXT, /* 問題描述：應然與實然的落差 */
     stakeholder_impact TEXT, /* 這個落差影響誰、影響多大 */
 );
@@ -100,7 +100,7 @@ CREATE TABLE problem (
 -- 行動層
 CREATE TABLE action (
     action_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    problem_id UUID REFERENCES problem(problem_id), /* 對應解決哪個問題 */
+    problem_id UUID REFERENCES problem(problem_id) ON DELETE CASCADE, /* 對應解決哪個問題 */
     action_description TEXT, /* 具體做了什麼 */
     role_scope TEXT /* 主導/協同/支援 (Led/Collaborated/Supported) */
 );
@@ -108,7 +108,7 @@ CREATE TABLE action (
 -- 結果/聲稱層 (Claim)
 CREATE TABLE claim (
     claim_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    action_id UUID REFERENCES action(action_id), /* 對應哪個行動產生此結果 */
+    action_id UUID REFERENCES action(action_id) ON DELETE CASCADE, /* 對應哪個行動產生此結果 */
     claim_description TEXT /* 結果敘述，CV bullet 的核心內容來源 */
 );
 
@@ -118,7 +118,7 @@ CREATE TABLE claim (
 -- 信心分數普遍缺乏校準，不可靠）。
 CREATE TABLE metric (
     metric_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    claim_id UUID REFERENCES claim(claim_id), /* 對應哪條結果聲稱 */
+    claim_id UUID REFERENCES claim(claim_id) ON DELETE CASCADE, /* 對應哪條結果聲稱 */
     metric_description TEXT, /* 這個數字代表什麼，例如「處理時間」「客戶滿意度」 */
     metric_value TEXT, /* 數值本身，含單位/描述，例如「從5天降到2天」「約15%」 */
     metric_confidence TEXT /* 精確 / 估算 / 大致印象 -- 一律人工判定 */
@@ -129,7 +129,7 @@ CREATE TABLE metric (
 -- 本表結構原本就支援一對多（claim_id 無 UNIQUE 限制），無需改動。
 CREATE TABLE evidence (
     evidence_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    claim_id UUID REFERENCES claim(claim_id), /* 對應哪條結果聲稱 */
+    claim_id UUID REFERENCES claim(claim_id) ON DELETE CASCADE, /* 對應哪條結果聲稱 */
     evidence_type TEXT, /* 原始檔案/結構化紀錄/自述/推論 */
     evidence_location TEXT, /* 檔案路徑或連結 */
     evidence_level TEXT /* L1-L4，避免把自認為的問題包裝成正式任務 */
@@ -138,7 +138,7 @@ CREATE TABLE evidence (
 -- 治理層
 CREATE TABLE governance (
     metadata_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    claim_id UUID REFERENCES claim(claim_id), /* 對應哪條 claim */
+    claim_id UUID REFERENCES claim(claim_id) ON DELETE CASCADE, /* 對應哪條 claim */
     support_level TEXT, /* 綜合證據強度分級 L1-L4 */
     use_policy TEXT DEFAULT NULL, /* 使用限制，如僅限資深職缺/特定產業 */ -- 限制範圍（能不能用）
     notes_for_llm TEXT DEFAULT NULL, /* 給生成模型的操作指示 */ -- 操作指示（怎麼寫）
@@ -159,8 +159,8 @@ CREATE TABLE tag (
 
 -- claim 與 tag 的多對多關聯
 CREATE TABLE claim_tag (
-    claim_id UUID REFERENCES claim(claim_id),
-    tag_id UUID REFERENCES tag(tag_id),
+    claim_id UUID REFERENCES claim(claim_id) ON DELETE CASCADE,
+    tag_id UUID REFERENCES tag(tag_id) ON DELETE CASCADE,
     PRIMARY KEY (claim_id, tag_id)
 );
 
@@ -206,7 +206,7 @@ CREATE TABLE job (
 -- 的一致設計原則相同）-- current_stage 變成 'Interviewing' 時 +1。
 CREATE TABLE application (
     application_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    job_id UUID REFERENCES job(job_id), /* company_name/job_title 皆透過此關聯取得，不再冗餘存 */
+    job_id UUID REFERENCES job(job_id) ON DELETE CASCADE, /* company_name/job_title 皆透過此關聯取得，不再冗餘存 */
     file_folder TEXT, /* 最終使用的 CV 版本存放路徑（可能是人工改過的 yaml/PDF） */
     current_stage TEXT NOT NULL DEFAULT 'Applied' CHECK (
         current_stage IN (
