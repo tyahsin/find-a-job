@@ -201,6 +201,18 @@ def _confirm_or_edit(draft, label: str, system_prompt: str) -> str:
 def _confirm_final_write() -> bool:
     return typer.confirm("\nConfirm write to database?", default=True)
 
+def _create_table(items: list, columns: list, title: str | None = None) -> None:
+
+    columns = ["#"] + columns
+    
+    table = Table(title=title)
+    for column in columns: # header
+        table.add_column(column)
+    for idx, item in enumerate(items, start=1): # values
+        table.add_row(str(idx), *item)
+
+    console.print(table)
+
 def _select_from_fuzzy_candidates(candidates, label_field: str):
     """
     Shows fuzzy match candidates and lets the user pick one, or choose to
@@ -212,9 +224,9 @@ def _select_from_fuzzy_candidates(candidates, label_field: str):
     table.add_column("Name")
     table.add_column("Similarity")
 
+    table.add_row("0", "[Create new]", "")
     for idx, (row, score) in enumerate(candidates, start=1):
         table.add_row(str(idx), getattr(row, label_field), f"{score:.0f}%")
-    table.add_row("0", "[Create new]", "")
     console.print(table)
 
     choice = typer.prompt("Select a number", type=int)
@@ -234,11 +246,11 @@ def _select_from_list(rows, columns: list[tuple[str, str]], title: str, allow_ne
     table.add_column("#")
     for header, _ in columns:
         table.add_column(header)
+    if allow_new_label is not None:
+        table.add_row("0", f"[{allow_new_label}]", *["" for _ in columns[1:]])
     for idx, row in enumerate(rows, start=1):
         values = [str(getattr(row, attr) or "") for _, attr in columns]
         table.add_row(str(idx), *values)
-    if allow_new_label is not None:
-        table.add_row("0", f"[{allow_new_label}]", *["" for _ in columns[1:]])
     console.print(table)
 
     choice = typer.prompt("Select a number", type=int)
@@ -1021,8 +1033,8 @@ def _select_project_interactively(session) -> ProjectORM:
 
     table = Table(title="Select a project")
     table.add_column("#")
-    table.add_column("Institution")
-    table.add_column("Role")
+    table.add_column("Company/School")
+    table.add_column("Role/Degree")
     table.add_column("Project")
     for idx, (project, institution, role) in enumerate(combined, start=1):
         table.add_row(
@@ -1142,19 +1154,15 @@ def _resolve_claim(session, action: ActionORM, desc: str | None = None) -> Claim
 # ---------------------------------------------------------------------------
 
 def _review_metric_drafts(drafts: list[tuple[str, str]]) -> list[tuple[str, str, str]]:
-    console.print("\n[bold]metric_description and metric_value (LLM draft)[/bold]")
+    console.print("\n[bold]Metric (LLM draft)[/bold]")
+    columns = ["Description", "Value"]
     if drafts:
-        table = Table()
-        table.add_column("#")
-        table.add_column("Description (what this number represents)")
-        table.add_column("Value (what is the difference in numbers/quantifiable statements)")
-        for idx, (m_desc, m_value) in enumerate(drafts, start=1):
-            table.add_row(str(idx), m_desc, m_value)
-        console.print(table)
+        _create_table(drafts, columns)
     else:
         console.print("[dim](LLM did not detect any quantifiable metrics)[/dim]")
 
     finalized: list[tuple[str, str, str, str]] = []
+    # confirm_fields_multiple(drafts, columns)
     for idx, (m_desc, m_value) in enumerate(drafts, start=1):
         keep = typer.confirm(f'Keep metric no. {idx}?', default=True)
         if not keep:
@@ -1214,18 +1222,11 @@ def _resolve_metrics(session, claim: ClaimORM) -> list[MetricORM]:
 # ---------------------------------------------------------------------------
 
 def _select_evidence_type() -> tuple[str, str]:
-    choices = list(EVIDENCE_TYPE_TO_LEVEL.keys())
-    table = Table(title="Select evidence type (level will be assigned automatically)")
-    table.add_column("#")
-    table.add_column("Evidence type")
-    table.add_column("Corresponding level")
-    for idx, choice in enumerate(choices, start=1):
-        table.add_row(str(idx), choice, EVIDENCE_TYPE_TO_LEVEL[choice])
-    console.print(table)
+    columns = ["Evidence type", "Corresponding level"]
+    _create_table(EVIDENCE_TYPE_TO_LEVEL, columns, title="Select evidence type (level will be assigned automatically)")
 
     idx = typer.prompt("Select a number", type=int)
-    evidence_type = choices[idx - 1]
-    evidence_level = EVIDENCE_TYPE_TO_LEVEL[evidence_type]
+    evidence_type, evidence_level = EVIDENCE_TYPE_TO_LEVEL[idx - 1]
     return evidence_type, evidence_level
 
 def _resolve_one_evidence(session, claim: ClaimORM, project: ProjectORM | None = None) -> EvidenceORM:
@@ -1266,18 +1267,6 @@ def _resolve_evidences(session, claim: ClaimORM, project: ProjectORM | None = No
 # ---------------------------------------------------------------------------
 # add-claim: Step 5 -- tags
 # ---------------------------------------------------------------------------
-
-def _create_table(items: list, columns: list) -> None:
-
-    columns = ["#"] + columns
-    
-    table = Table()
-    for column in columns: # header
-        table.add_column(column)
-    for idx, item in enumerate(items, start=1): # values
-        table.add_column(str(idx), *item)
-
-    console.print(table)
 
 def _confirm_or_edit_tags(proposed: list[tuple[str, str]]) -> list[tuple[str, str]]:
     console.print("\n[bold]Tag drafts (generated by LLM from this record's full content)[/bold]")
