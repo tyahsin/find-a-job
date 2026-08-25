@@ -145,7 +145,7 @@ app = typer.Typer(help="Add experience entries to database.")
 console = Console()
 
 # ---------------------------------------------------------------------------
-# Small shared helpers
+# Shared helpers
 # ---------------------------------------------------------------------------
 
 TRACK_OPTIONS: list[str] = [
@@ -197,7 +197,10 @@ def _confirm_or_edit(draft, label: str, system_prompt: str) -> str:
             return draft.text
 
         console.print(f"\n[red][Error] {decision.value}[/red]")
-    
+
+def _confirm_final_write() -> bool:
+    return typer.confirm("\nConfirm write to database?", default=True)
+
 def _select_from_fuzzy_candidates(candidates, label_field: str):
     """
     Shows fuzzy match candidates and lets the user pick one, or choose to
@@ -368,11 +371,11 @@ def add_identity() -> None:
         else:
             make_default = typer.confirm("Set this as the default identity (is_default)?", default=False)
 
+        _handle_default_flag(session, make_default)
+
         if not _confirm_final_write():
             console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
             raise typer.Exit(code=0)
-
-        _handle_default_flag(session, make_default)
 
         identity = create_row(
             session,
@@ -580,6 +583,11 @@ def _resolve_company(session) -> CompanyORM:
             return chosen
 
     location = typer.prompt("Location", default="", show_default=False)
+
+    if not _confirm_final_write():
+        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        raise typer.Exit(code=0)
+
     return create_row(
         session,
         CompanyORM,
@@ -595,6 +603,11 @@ def _resolve_school(session) -> SchoolORM:
             return chosen
 
     location = typer.prompt("Location", default="", show_default=False)
+
+    if not _confirm_final_write():
+        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        raise typer.Exit(code=0)
+
     return create_row(
         session,
         SchoolORM,
@@ -613,9 +626,9 @@ def add_company() -> None:
     """Interactively add a single company record (standalone, no position/project required)."""
     with get_session() as session:
         company = _resolve_company(session)
-        if not _confirm_final_write():
-            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-            raise typer.Exit(code=0)
+        # if not _confirm_final_write():
+        #     console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        #     raise typer.Exit(code=0)
         company_id = company.company_id
 
     console.print(f"[green]Done! Company ID: {company_id}[/green]")
@@ -625,9 +638,9 @@ def add_school() -> None:
     """Interactively add a single school record (standalone, no degree/project required)."""
     with get_session() as session:
         school = _resolve_school(session)
-        if not _confirm_final_write():
-            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-            raise typer.Exit(code=0)
+        # if not _confirm_final_write():
+        #     console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        #     raise typer.Exit(code=0)
         school_id = school.school_id
 
     console.print(f"[green]Done! School ID: {school_id}[/green]")
@@ -638,9 +651,9 @@ def add_position() -> None:
     with get_session() as session:
         company = _select_existing_company(session)
         position = _resolve_position(session, company)
-        if not _confirm_final_write():
-            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-            raise typer.Exit(code=0)
+        # if not _confirm_final_write():
+        #     console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        #     raise typer.Exit(code=0)
         position_id = position.position_id
 
     console.print(f"[green]Done! Position ID: {position_id}[/green]")
@@ -652,9 +665,9 @@ def add_degree() -> None:
     with get_session() as session:
         school = _select_existing_school(session)
         degree = _resolve_degree(session, school)
-        if not _confirm_final_write():
-            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-            raise typer.Exit(code=0)
+        # if not _confirm_final_write():
+        #     console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        #     raise typer.Exit(code=0)
         degree_id = degree.degree_id
 
     console.print(f"[green]Done! Degree ID: {degree_id}[/green]")
@@ -709,6 +722,10 @@ def _resolve_position(session, company: CompanyORM) -> PositionORM:
     start_dt = _prompt_date("Start date (YYYY-MM-DD)")
     end_dt = _prompt_date("End date (YYYY-MM-DD, leave blank for present)", allow_blank=True)
     responsibility, responsibility_source = _draft_responsibility()
+
+    if not _confirm_final_write():
+        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        raise typer.Exit(code=0)
 
     return create_row(
         session,
@@ -807,6 +824,10 @@ def _resolve_degree(session, school: "SchoolORM") -> "DegreeORM":
 
     degree_honors, degree_awards = _resolve_degree_achievements()
 
+    if not _confirm_final_write():
+        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        raise typer.Exit(code=0)
+
     return create_row(
         session,
         DegreeORM,
@@ -887,6 +908,10 @@ def _resolve_project(
 
         project_context = _confirm_or_edit(response, "Project background narrative", PROBLEM_REGENERATE_SYSTEM_PROMPT)
 
+        if not _confirm_final_write():
+            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+            raise typer.Exit(code=0)
+
         return create_row(
                 session,
                 ProjectORM,
@@ -901,14 +926,7 @@ def _resolve_project(
                 },
             )
 
-    
 
-# ---------------------------------------------------------------------------
-# Step 4: final confirmation
-# ---------------------------------------------------------------------------
-
-def _confirm_final_write() -> bool:
-    return typer.confirm("\nConfirm write to database?", default=True)
 
 # ---------------------------------------------------------------------------
 # add-project command (v1.9: flat position/degree selector first)
@@ -939,9 +957,9 @@ def add_project() -> None:
                 degree = _resolve_degree(session, school)
             project = _resolve_project(session, position_id=None, degree_id=degree.degree_id)
 
-        if not _confirm_final_write():
-            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-            raise typer.Exit(code=0)
+        # if not _confirm_final_write():
+        #     console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        #     raise typer.Exit(code=0)
 
         project_id = project.project_id
         # transaction commits automatically on successful exit of get_session().
@@ -1022,18 +1040,26 @@ def _select_project_interactively(session) -> ProjectORM:
 # add-claim: Step 1 -- problem
 # ---------------------------------------------------------------------------
 
-def _resolve_problem(session, project: ProjectORM) -> ProblemORM:
-    description = typer.prompt("Describe the problem encountered in this project (no need to describe the solution)")
-    client = get_llm_client()
-    response = client.generate_text(
-        system_prompt=PROBLEM_SYSTEM_PROMPT,
-        user_prompt=build_problem_prompt(description),
-    )
-    problem_description = _confirm_or_edit(response, "Problem statement", PROBLEM_REGENERATE_SYSTEM_PROMPT)
+def _resolve_problem(session, project: ProjectORM, desc: str | None = None, impact: str | None = None) -> ProblemORM:
+    if desc is None and impact is None:
+        description = typer.prompt("Describe the problem encountered in this project (no need to describe the solution)")
+        client = get_llm_client()
+        response = client.generate_text(
+            system_prompt=PROBLEM_SYSTEM_PROMPT,
+            user_prompt=build_problem_prompt(description),
+        )
+        problem_description = _confirm_or_edit(response, "Problem statement", PROBLEM_REGENERATE_SYSTEM_PROMPT)
 
-    stakeholder_impact = typer.prompt(
-        "Which stakeholders were affected by this problem? (optional)", default="", show_default=False
-    )
+        stakeholder_impact = typer.prompt(
+            "Which stakeholders were affected by this problem? (optional)", default="", show_default=False
+        )
+    else:
+        problem_description = desc
+        stakeholder_impact = impact
+
+    if not _confirm_final_write():
+        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        raise typer.Exit(code=0)
 
     return create_row(
         session,
@@ -1049,20 +1075,28 @@ def _resolve_problem(session, project: ProjectORM) -> ProblemORM:
 # add-claim: Step 2 -- action
 # ---------------------------------------------------------------------------
 
-def _resolve_action(session, problem: ProblemORM) -> ActionORM:
-    description = typer.prompt("What did you do about this problem? (describe only the action itself)")
-    client = get_llm_client()
-    response = client.generate_text(
-        system_prompt=ACTION_SYSTEM_PROMPT,
-        user_prompt=build_action_prompt(description),
-    )
-    action_description = _confirm_or_edit(response, "Action statement", ACTION_REGENERATE_SYSTEM_PROMPT)
+def _resolve_action(session, problem: ProblemORM, desc: str | None = None, scope: str | None = None) -> ActionORM:
+    if desc is None and scope is None:
+        description = typer.prompt("What did you do about this problem? (describe only the action itself)")
+        client = get_llm_client()
+        response = client.generate_text(
+            system_prompt=ACTION_SYSTEM_PROMPT,
+            user_prompt=build_action_prompt(description),
+        )
+        action_description = _confirm_or_edit(response, "Action statement", ACTION_REGENERATE_SYSTEM_PROMPT)
 
-    role_scope = _select_from_menu(
-        ROLE_SCOPE_OPTIONS,
-        title="What was your role in this action?",
-        allow_blank=False,
-    )
+        role_scope = _select_from_menu(
+            ROLE_SCOPE_OPTIONS,
+            title="What was your role in this action?",
+            allow_blank=False,
+        )
+    else:
+        description = desc
+        role_scope = scope
+
+    if not _confirm_final_write():
+        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        raise typer.Exit(code=0)
 
     return create_row(
         session,
@@ -1078,14 +1112,21 @@ def _resolve_action(session, problem: ProblemORM) -> ActionORM:
 # add-claim: Step 3 -- claim (description)
 # ---------------------------------------------------------------------------
 
-def _resolve_claim(session, action: ActionORM) -> ClaimORM:
-    raw_input_text = typer.prompt("What concrete result did this action produce? (describe only the result, don't repeat the action)")
-    client = get_llm_client()
-    response = client.generate_text(
-        system_prompt=CLAIM_SYSTEM_PROMPT,
-        user_prompt=build_result_claim_prompt(raw_input_text),
-    )
-    description = _confirm_or_edit(response, "Claim statement", CLAIM_REGENERATE_SYSTEM_PROMPT)
+def _resolve_claim(session, action: ActionORM, desc: str | None = None) -> ClaimORM:
+    if desc is None:
+        raw_input_text = typer.prompt("What concrete result did this action produce? (describe only the result, don't repeat the action)")
+        client = get_llm_client()
+        response = client.generate_text(
+            system_prompt=CLAIM_SYSTEM_PROMPT,
+            user_prompt=build_result_claim_prompt(raw_input_text),
+        )
+        description = _confirm_or_edit(response, "Claim statement", CLAIM_REGENERATE_SYSTEM_PROMPT)
+    else:
+        description = desc
+
+    if not _confirm_final_write():
+        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        raise typer.Exit(code=0)
 
     return create_row(
         session,
@@ -1148,6 +1189,10 @@ def _resolve_metrics(session, claim: ClaimORM) -> list[MetricORM]:
     drafts = parse_metric_response(response.text)
     finalized = _review_metric_drafts(drafts)
 
+    if not _confirm_final_write():
+        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        raise typer.Exit(code=0)
+
     metric_orms: list[MetricORM] = []
     for m_desc, m_value, confidence in finalized:
         metric_orms.append(
@@ -1196,6 +1241,10 @@ def _resolve_one_evidence(session, claim: ClaimORM, project: ProjectORM | None =
             "Evidence location/link? (e.g. file path, URL, optional)", default="", show_default=False
         )
     console.print(f"[dim]Corresponding evidence level: {evidence_level} (auto-derived from evidence type)[/dim]")
+
+    if not _confirm_final_write():
+        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        raise typer.Exit(code=0)
 
     return create_row(
         session,
@@ -1296,6 +1345,10 @@ def _resolve_tags(
     proposed = parse_tag_response(response.text)
     final_tags = _confirm_or_edit_tags(proposed)
 
+    if not _confirm_final_write():
+        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        raise typer.Exit(code=0)
+
     tag_orms: list[TagORM] = []
     for tag_name, tag_category in final_tags:
         tag = select_or_create(
@@ -1330,6 +1383,10 @@ def _resolve_governance(session, claim: ClaimORM) -> GovernanceORM:
     allowed_for_generation = typer.confirm(
         "Allow this claim into the CV-generation candidate pool?", default=True
     )
+
+    if not _confirm_final_write():
+        console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
+        raise typer.Exit(code=0)
 
     return create_row(
         session,
@@ -1376,10 +1433,6 @@ def add_claim(
         evidences = _resolve_evidences(session, claim)
         _resolve_tags(session, claim, problem, action, evidences, project)
         _resolve_governance(session, claim)
-
-        if not _confirm_final_write():
-            console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-            raise typer.Exit(code=0)
 
         claim_id = claim.claim_id
 
@@ -1466,55 +1519,23 @@ def add_claims(
             project = _select_project_interactively(session)
 
     raw_claims = _resolve_claims(project) 
-    for i, raw_claim in enumerate(raw_claims):
+    for idx, raw_claim in enumerate(raw_claims):
         confirmed = {}
-        for key, val in raw_claim.items(): 
-            regenereate_system_promt = \
-                None if "description" not in key \
-                else PROBLEM_REGENERATE_SYSTEM_PROMPT if "problem" in key \
-                else ACTION_REGENERATE_SYSTEM_PROMPT if "action" in key \
-                else CLAIM_REGENERATE_SYSTEM_PROMPT
-            confirmed_val = _confirm_or_edit(val, key, regenereate_system_promt)
+        for key, val, prompt in zip(raw_claim.items(), [PROBLEM_REGENERATE_SYSTEM_PROMPT, None, ACTION_REGENERATE_SYSTEM_PROMPT, None, CLAIM_REGENERATE_SYSTEM_PROMPT]): 
+            confirmed_val = _confirm_or_edit(val, key, prompt)
             confirmed[key] = confirmed_val
 
         with get_session() as session:
-            problem = create_row(
-                session,
-                ProblemORM,
-                {
-                    "project_id": project.project_id,
-                    "problem_description": confirmed["problem_description"],
-                    "stakeholder_impact": confirmed["stakeholder_impact"],
-                }
-            )
-            action = create_row(
-                session,
-                ActionORM,
-                {
-                    "problem_id": problem.problem_id,
-                    "action_description": confirmed["action_description"],
-                    "role_scope": confirmed["role_scope"],
-                }
-            )
-            claim = create_row(
-                session,
-                ClaimORM,
-                {
-                    "action_id": action.action_id,
-                    "claim_description": confirmed["claim_description"],
-                }
-            )
+            problem = _resolve_problem(session, project, confirmed["problem_description"], confirmed["stakeholder_impact"])
+            action = _resolve_action(session, problem, confirmed["action_description"], confirmed["role_scope"])
+            claim = _resolve_claim(session, action, confirmed["claim_description"])
             _resolve_metrics(session, claim)
             evidences = _resolve_evidences(session, claim, project)
             _resolve_tags(session, claim, problem, action, evidences, project)
             _resolve_governance(session, claim)
 
-            if not _confirm_final_write():
-                console.print("[yellow]Cancelled -- no changes were written.[/yellow]")
-                continue
-
         fill_pending_support_levels()
-        console.print(f"[green] {project.project_name} has {(i+1)} claim(s) written into database [/green]")
+        console.print(f"[green] {project.project_name} has {(idx+1)} claim(s) written into database [/green]")
 
 
 @app.command("add-project-claims")
