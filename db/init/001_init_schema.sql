@@ -102,7 +102,9 @@ CREATE TABLE action (
     action_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     problem_id UUID REFERENCES problem(problem_id) ON DELETE CASCADE, /* 對應解決哪個問題 */
     action_description TEXT, /* 具體做了什麼 */
-    role_scope TEXT /* 主導/協同/支援 (Led/Collaborated/Supported) */
+    role_scope TEXT NOT NULL CHECK (
+        role_scope IN ('led', 'collaborated', 'supported')
+    ),
 );
 
 -- 結果/聲稱層 (Claim)
@@ -121,7 +123,9 @@ CREATE TABLE metric (
     claim_id UUID REFERENCES claim(claim_id) ON DELETE CASCADE, /* 對應哪條結果聲稱 */
     metric_description TEXT, /* 這個數字代表什麼，例如「處理時間」「客戶滿意度」 */
     metric_value TEXT, /* 數值本身，含單位/描述，例如「從5天降到2天」「約15%」 */
-    metric_confidence TEXT /* 精確 / 估算 / 大致印象 -- 一律人工判定 */
+    metric_confidence TEXT NOT NULL CHECK (
+        metric_confidence in ('precise', 'estimated', 'rough impression')
+    )
 );
 
 -- 證據層

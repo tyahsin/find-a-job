@@ -1,86 +1,16 @@
 """
 onboard/prompts.py
-Version: v1.2 (2026-08-10)
-
-Changelog:
-- v1.2 (2026-08-10): Full English-only pass. EVIDENCE_TYPE_TO_LEVEL and
-  METRIC_CONFIDENCE_OPTIONS (previously left in Chinese as "human-selected,
-  never LLM output") converted to English per the project-wide decision
-  that the ENTIRE system -- every prompt and every interface element --
-  must be English-only, with no exceptions carved out for fields that
-  happen not to be LLM output.
-- v1.1 (2026-08-10, earlier same-day revision): _BASE_SYSTEM_RULES,
-  TAG_SYSTEM_PROMPT, and METRIC_EXTRACTION_SYSTEM_PROMPT (+
-  VALUE_TYPE_OPTIONS/METRIC_TYPE_OPTIONS) converted to English. Fixed the
-  root contradiction where _BASE_SYSTEM_RULES demanded Chinese output while
-  individual prompts separately bolted on "must be in English".
-- v1.0 (2026-08-04, inferred): Original Chinese-language prompt templates.
-
-Prompt templates used by the onboard CLI flows to draft:
-- position.responsibility (from a source file OR from a spoken/typed summary)
-- project.project_context (from a short user-provided description)
-- action.description (what was done)
-- claim.description (what result followed from the action -- deliberately
-  scoped AWAY from action's territory, see CLAIM_SYSTEM_PROMPT below)
-
-Design principle (matches the project's governance rules): the LLM only
-rephrases/organizes what the user already provided. It must NOT invent
-responsibilities, scope, dates, or achievements that aren't present in the
-input. All drafts are shown to the user for confirmation/edit before being
-persisted (precompute-once, human-reviewed).
-
-LANGUAGE POLICY (final, v1.2): the entire onboard/CV-generation system --
-every LLM prompt AND every user-facing interface element (CLI prompts,
-menu options, fixed-choice vocabularies) -- is English-only. This covers:
-  - the five narrative description prompts (_BASE_SYSTEM_RULES)
-  - tag_name in TAG_SYSTEM_PROMPT
-  - all three fields extracted by METRIC_EXTRACTION_SYSTEM_PROMPT
-  - VALUE_TYPE_OPTIONS / METRIC_TYPE_OPTIONS (LLM output AND human-selected
-    CLI menu, same list)
-  - EVIDENCE_TYPE_TO_LEVEL (human-selected CLI menu)
-  - METRIC_CONFIDENCE_OPTIONS (human-selected CLI menu)
-  - ROLE_SCOPE_OPTIONS (already English, unchanged)
-
-MIGRATION NOTE: EVIDENCE_TYPE_TO_LEVEL, VALUE_TYPE_OPTIONS/
-METRIC_TYPE_OPTIONS, and METRIC_CONFIDENCE_OPTIONS all changed their
-string values from Chinese to English across v1.1/v1.2. Any already-
-persisted rows (evidence.evidence_type, claim_metric.metric_type,
-claim_metric.metric_confidence) using the old Chinese values will not
-match these new English option lists or parse_metric_response's
-valid_types set -- check/backfill existing data if any exists before
-relying on exact-match logic against it.
 """
 
 from __future__ import annotations
 
-from core.db import TAG_CATEOGRY
-
-# ---------------------------------------------------------------------------
-# Shared system-level guardrails
-# ---------------------------------------------------------------------------
-
-_BASE_SYSTEM_RULES = """You are a writing assistant that helps organize a person's career and
-education experience for resume/CV purposes. Your task is to take the raw
-material the user provides and turn it into a concise, clear, professional
-ENGLISH summary.
-
-Strict rules (must follow):
-1. Do not add any concrete fact, number, scope of responsibility, or
-   achievement that does not already appear in the user-provided material.
-2. Do not rewrite uncertain or vague statements into more confident or
-   exaggerated ones.
-3. Do not infer or extend any skill, responsibility, or scope of
-   contribution the user did not explicitly mention.
-4. You may only: reorganize sentences, polish word choice, remove filler
-   words, unify tone, and improve readability.
-5. If the original material is too short or vague, the summary should stay
-   equally short/vague -- do not "fill in the gaps" yourself.
-6. Output must be written in English, no matter what language the user's
-   input material is written in.
-
-Output format: output ONLY the summary text itself, plain text, with no
-preamble, heading, or explanatory text.
-"""
+from core.prompts import (
+    _BASE_SYSTEM_RULES, 
+    _REGENERATE_TASK_BLOCK, 
+)
+from core.db import (
+    TAG_CATEOGRY,
+)
 
 # ---------------------------------------------------------------------------
 # position.responsibility
@@ -93,6 +23,8 @@ objective description of duties, not an achievement narrative (achievements
 are handled separately elsewhere).
 Suggested length: 2 sentences at most and less than 25 words.
 """
+
+RESPONSIBILITY_REGENERATE_SYSTEM_PROMPT = RESPONSIBILITY_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
 
 
 def build_responsibility_prompt_from_source(source_text: str) -> str:
@@ -141,6 +73,8 @@ Stress more on the curriculum and learning outcome with keywords of the area of 
 Suggested length: 2 sentences at most and less than 25 words.
 """
 
+DEGREE_DESCRIPTION_REGENERATE_SYSTEM_PROMPT = DEGREE_DESCRIPTION_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
+
 
 def build_degree_description_prompt_from_source(source_text: str) -> str:
     """Use when the user provided a source file (program syllabus,
@@ -185,6 +119,8 @@ project and what kind of project it is. This is NOT an outcome narrative
 CRITICAL RULE -- length: 2 sentences at most and less than 25 words.
 """
 
+PROJECT_CONTEXT_REGENERATE_SYSTEM_PROMPT = PROJECT_CONTEXT_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
+
 def build_project_context_prompt_from_source(source_text: str) -> str:
     """
     Use for drafting project.project_context from a source file.
@@ -227,6 +163,7 @@ existed at the time. Do not describe any solution (that's action's job).
 Suggested length: 1-2 sentences.
 """
 
+PROBLEM_REGENERATE_SYSTEM_PROMPT = PROBLEM_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
 
 def build_problem_prompt(user_description: str) -> str:
     return f"""The user described a problem encountered in this project. Please organize
@@ -251,6 +188,7 @@ intervention taken. Do not describe the outcome/impact of the action
 Suggested length: 1-2 sentences.
 """
 
+ACTION_REGENERATE_SYSTEM_PROMPT = ACTION_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
 
 def build_action_prompt(user_description: str) -> str:
     return f"""The user described the action taken to address this problem. Please
@@ -266,10 +204,6 @@ Output the summary (plain text, no preamble):"""
 # ---------------------------------------------------------------------------
 # claim.description
 # ---------------------------------------------------------------------------
-# NOTE: previously this prompt's wording overlapped semantically with
-# action's wording, causing user confusion about which layer they were
-# filling in. This version explicitly draws the boundary: description =
-# what happened AFTER the action, not the action itself.
 
 CLAIM_SYSTEM_PROMPT = _BASE_SYSTEM_RULES + """
 Purpose of this summary: describe the RESULT that followed from a
@@ -280,6 +214,7 @@ job) -- only describe "what happened after it was done".
 Suggested length: 1-2 sentences, as concise as possible.
 """
 
+CLAIM_REGENERATE_SYSTEM_PROMPT = CLAIM_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
 
 def build_result_claim_prompt(user_description: str) -> str:
     return f"""The user described the result produced by this action. Please organize
@@ -292,46 +227,9 @@ repeat the action itself):
 
 Output the summary (plain text, no preamble):"""
 
-
 # ---------------------------------------------------------------------------
-# evidence_type -> evidence_level mapping (Problem 3)
+# tag generation
 # ---------------------------------------------------------------------------
-# Rationale: evidence strength is a function of evidence TYPE, not a
-# separate subjective judgment call. Letting the user pick L1-L4 freely
-# leads to inconsistent self-grading over time (the same kind of evidence
-# might be graded L2 today and L3 next month). Instead, the CLI presents a
-# fixed menu of evidence types, and evidence_level is derived automatically.
-#
-# This is a human-selected fixed menu (never LLM output). Converted to
-# English in v1.2 per the "whole system, no exceptions" policy.
-
-# L1 = strongest (verifiable, third-party or system-of-record evidence)
-# L4 = weakest (unverifiable, self-reported recollection)
-
-# EVIDENCE_TYPE_TO_LEVEL: list[tuple[str, str]] = [
-#     ("Formal documentation (contract / official report / system screenshot)", "L1"),
-#     ("Third-party verification (manager review / client feedback / formal evaluation)", "L1"),
-#     ("Data record (analytics report / system log / dashboard)", "L2"),
-#     ("Internal team documentation (meeting notes / email / Slack conversation)", "L2"),
-#     ("Verbal account / recollection (no written record, memory only)", "L3"),
-#     ("Inference / estimate (reasonable inference without direct evidence)", "L4"),
-# ]
-
-# ---------------------------------------------------------------------------
-# tag generation (Problem 1 & 2 & 3 from Aug 2026 review)
-# ---------------------------------------------------------------------------
-# Design: tags are NOT typed by the user. Once problem/action/claim/evidence
-# are all filled in for a given add-claim run, the LLM reads the FULL
-# accumulated text of that run (already held in memory -- the user never
-# re-pastes anything) and proposes a set of tags. The user then
-# confirms/edits the proposed list (not a yes/no gate -- tagging itself is
-# a mandatory step of add-claim, only the exact tag content is adjustable).
-#
-# LANGUAGE POLICY: tag_name must be English, no exceptions. Tags exist
-# specifically to be matched against job descriptions (JD) at CV-generation
-# time, and JDs are overwhelmingly in English for this user's target roles
-# -- Chinese tags would silently fail to match and break the whole matching
-# step.
 
 TAG_SYSTEM_PROMPT = """You are an assistant that helps organize tags for a person's career
 experience, for later matching against job descriptions (JD).
@@ -438,41 +336,13 @@ def parse_tag_response(raw_text: str) -> list[tuple[str, str]]:
         name_part, _, category_part = line.partition("|")
         name = name_part.strip()
         category = category_part.strip().lower()
-        if name and category in TAG_CATEOGRY: # valid_categories:
+        if name and category in TAG_CATEOGRY:
             results.append((name, category))
     return results
-
-
-# ---------------------------------------------------------------------------
-# fixed-choice menus (Aug 2026 update: role_scope / value_type /
-# metric_confidence should be selected from a list, not free-typed)
-# ---------------------------------------------------------------------------
-ROLE_SCOPE_OPTIONS: list[str] = [
-    "Led",
-    "Collaborated",
-    "Supported",
-]
-
-METRIC_CONFIDENCE_OPTIONS: list[str] = [
-    "Precise",
-    "Estimated",
-    "Rough impression",
-]
 
 # ---------------------------------------------------------------------------
 # claim_metric extraction (Aug 2026 update)
 # ---------------------------------------------------------------------------
-# LLM only EXTRACTS metrics that are explicitly present in description
-# text -- it must not estimate, invent, or self-report a confidence score
-# (LLM self-reported confidence is known to be poorly calibrated). The user
-# always reviews/edits the extracted draft, and metric_confidence is always
-# a manual human selection from METRIC_CONFIDENCE_OPTIONS, never LLM output.
-#
-# LANGUAGE POLICY: all three extracted fields (type, label, value) are
-# required to be English. type comes from the English METRIC_TYPE_OPTIONS
-# above; label/value inherit English naturally once claim.description
-# itself is generated in English, but the rule is stated explicitly here
-# too as a defensive guarantee.
 
 METRIC_EXTRACTION_SYSTEM_PROMPT = """Your task is to extract all quantifiable metrics from a claim
 description (description).
@@ -615,69 +485,6 @@ organize it into a list of Json arrays as system prompt suggested:
 
 Output the list (plain text, no preamble):"""
 
-# ---------------------------------------------------------------------------
-# regenerate (Aug 2026 update)
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# regenerate (add-claim: single-field regeneration from previous draft +
-# steering note, used by problem/action/claim's own confirm loop)
-# ---------------------------------------------------------------------------
-# Design: reuse each field's existing SYSTEM_PROMPT (which already carries
-# _BASE_SYSTEM_RULES + that field's purpose/boundary rules) as the base,
-# and append a regenerate-specific task block on top. This guarantees a
-# steering_note can never push a field across its boundary (e.g. asking
-# problem_description to describe a solution) -- the boundary rules from
-# the original drafting prompt stay in force during regenerate too.
-
-_REGENERATE_TASK_BLOCK = """
-You are now REGENERATING this field, not drafting it from scratch. The
-user was not fully satisfied with a previous draft and has given you a
-short steering note describing what should be different this time.
-
-You are given:
-- previous_output: the current version of this field's text
-- steering_note: the user's instruction on how to improve it
-
-Regenerate-specific rules (in addition to every rule above, which still
-apply in full -- previous_output is now your "raw material" for those
-rules):
-1. previous_output is your ONLY source of facts. All rules above about
-   not adding facts/scope/achievement apply against previous_output, not
-   against any new information.
-2. steering_note may ONLY request a different PRESENTATION of the same
-   underlying facts already in previous_output -- tone, length,
-   directness, word choice, sentence structure -- or an explicit factual
-   correction the user names (e.g. "change 'led' to 'supported'"). It may
-   NOT be used to add a new fact, or to move content across this field's
-   boundary into another field's territory (see the purpose/boundary
-   rules above for what belongs in this field).
-3. If steering_note conflicts with rule 1 or 2, or with this field's
-   boundary rule above, follow those rules instead and produce the
-   closest faithful revision rather than complying literally.
-
-Output format: output ONLY the revised sentence, plain text, no preamble,
-no quotation marks, no field name prefix.
-"""
-
-RESPONSIBILITY_REGENERATE_SYSTEM_PROMPT = RESPONSIBILITY_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
-DEGREE_DESCRIPTION_REGENERATE_SYSTEM_PROMPT = DEGREE_DESCRIPTION_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
-PROJECT_CONTEXT_REGENERATE_SYSTEM_PROMPT = PROJECT_CONTEXT_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
-PROBLEM_REGENERATE_SYSTEM_PROMPT = PROBLEM_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
-ACTION_REGENERATE_SYSTEM_PROMPT = ACTION_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
-CLAIM_REGENERATE_SYSTEM_PROMPT = CLAIM_SYSTEM_PROMPT + _REGENERATE_TASK_BLOCK
 
 
-def build_regenerate_prompt(previous_output: str, steering_note: str) -> str:
-    """
-    Shared user-prompt builder for all three regenerate calls
-    (problem/action/claim). The system prompt (PROBLEM/ACTION/
-    CLAIM_REGENERATE_SYSTEM_PROMPT) already carries the field-specific
-    boundary, so this template stays identical across all three fields.
-    """
-    return f"""# Previous draft (the user was not satisfied with this)
-{previous_output}
 
-# User's steering note for this regeneration
-{steering_note}
-
-Output the revised sentence:"""

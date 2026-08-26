@@ -1,57 +1,5 @@
 """
 track/cli.py
-Version: v4 (2026-08-20)
-
-CLI entry point for the track/ module -- wraps application_logger.py's
-four functions (find_or_create_job/record_application/update_stage/
-list_applications) as Typer commands. Uses a plain empty callback()
-(Typer's standard group pattern, not invoke_without_command).
-
-Command naming (user-confirmed 2026-08-20):
-    track add-job -> find_or_create_job(), with optional LLM-assisted
-                    JD extraction path via --jd-file
-    track add_application -> record_application()
-    track update_application -> update_stage()
-    track list-application   -> list_applications()
-
-(v2 change, 2026-08-20): the standalone `apply extract` command was
-REMOVED -- absorbed into `apply create` via an LLM extraction +
-one-shot confirmation flow, converging on a single find_or_create_job()
-call regardless of path.
-
-(v3 fix, 2026-08-20): added --jd-file (in addition to --jd-text at the
-time) to read JD text from a file path, since --jd-text only accepts
-literal pasted text -- passing a file path string to --jd-text does
-NOT read the file (the shell does not expand it), it just sends the
-path string itself to the LLM as if it were the JD body.
-
-(v4 change, 2026-08-20, user-confirmed):
-- --jd-text REMOVED entirely. In practice the user always has the JD
-  saved to a file, never pastes raw JD text on the command line -- so
-  --jd-text added a code path that was never actually going to be
-  used, plus it was the direct cause of the v3 bug report (a file path
-  string got treated as literal JD text). --jd-file is now the only
-  way to trigger the LLM-assisted extraction path.
-- When --jd-file is NOT provided, --company / --title / --location /
-  --description are now all REQUIRED (previously only --company and
-  --title were required). Rationale: without an LLM extraction pass,
-  there is no other source for job_location/job_description, and
-  leaving them silently optional meant a manually-created job row
-  could end up missing fields that gap_analyzer.py (Step 3) will later
-  depend on for JD-vs-tag comparison. source_url/date_posted/
-  contact_name/contact_email remain optional in both paths since they
-  are genuinely not always available (e.g. a JD posted without a named
-  contact).
-- All Typer-facing text (help strings, echo/prompt messages, error
-  messages) converted from Chinese to English per user instruction.
-  Docstrings remain English (they always were).
-- The one-shot confirmation logic (show draft, accept-all / override
-  fields / abort) is no longer implemented inline here -- it now calls
-  core/confirmation.py's confirm_fields_once(), a generic helper
-  extracted from this same pattern. See core/confirmation.py's
-  docstring for why experience_rewriter.py's per-bullet regenerate loop
-  was deliberately NOT folded into the same helper (different risk
-  tier, different interaction shape).
 """
 
 from __future__ import annotations

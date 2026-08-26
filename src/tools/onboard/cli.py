@@ -1,106 +1,5 @@
 """
 onboard/cli.py
-Version: v1.10 (2026-08-19)
-
-Changelog:
-- v1.10 (2026-08-19): Version/changelog sync fix -- no logic changes.
-  The previous v1.9 header/changelog described _resolve_target_positions()
-  allowing a blank first entry (returning an empty list, interpreted by
-  gencv/identity_selector.py as "applies to ANY job title") and
-  add_network()'s corresponding "Applies to: ANY job title" message
-  branch as a SEPARATE v1.10 patch still pending manual application on
-  top of this file. On review, both pieces of behavior were already
-  present and working in this file's actual code (see
-  _resolve_target_positions()'s docstring/loop and add_network()'s
-  if/else message branch below) -- the patch had already been applied,
-  but the version header and changelog were never bumped to reflect it,
-  leaving the project's spec doc (v6 md) out of sync with the real file.
-  This version bump is purely a metadata correction so the file's own
-  header, the changelog, and the project spec doc all agree that this
-  functionality is DONE, not pending. No function bodies, control flow,
-  or strings were changed in this pass.
-- v1.9 (2026-08-10): add-project's work/education branches now try a flat
-  join-based selector FIRST (_select_existing_position /
-  _select_existing_degree), mirroring the pattern already used by
-  add-claim's project selector. If any position+company (work track) or
-  degree+school (education track) rows already exist, the user sees one
-  numbered table with Institution / Role columns and can pick directly --
-  skipping the separate "select/create company" then "select/create
-  position" steps entirely. A "[Create new]" row (option 0) is always
-  offered so the user can still create a brand-new company+position (or
-  school+degree) even when existing ones are shown. If NO rows exist at
-  all yet, the flat selector returns None immediately (no menu shown) and
-  add_project() falls back to the original _resolve_company ->
-  _resolve_position (or _resolve_school -> _resolve_degree) stepwise
-  flow, unchanged from prior versions. add-claim's own project selector
-  and governance flow are untouched by this change.
-- v1.8 (2026-08-10): Governance support_level moved to an explicit call
-  (core.db.fill_pending_support_levels()) made once, right after
-  add_claim()'s `with get_session()` block finishes committing. Only
-  add-claim calls it -- governance conceptually only exists for claims.
-- v1.7 (2026-08-10): [SUPERSEDED by v1.8] support_level via global
-  after_commit hook.
-- v1.6 (2026-08-10): Added Step 6 (governance) to add-claim.
-- v1.5 (2026-08-10): Added add-company / add-school / add-position /
-  add-degree standalone commands.
-- v1.4 (2026-08-10): Removed "Start Date" column from add-claim's project
-  selector -- Institution / Role / Project only.
-- v1.3 (2026-08-10): add-claim's project selector flattened via two
-  explicit JOIN queries.
-- v1.2 (2026-08-10): work/education track selection via fixed menu.
-- v1.1 (2026-08-10): Full English-only pass.
-- v1.0 (2026-08-04, inferred): Original Chinese-language CLI interface.
-
-Typer CLI entrypoint for the onboard module.
-
-Implements:
-- `add-company` / `add-school`: standalone single-entity commands for the
-  upper-level entities.
-- `add-position` / `add-degree`: standalone single-entity commands for the
-  mid-level entities.
-- `add-project`: walks through Step 0-4 (company/school -> position/degree
-  -> project). As of v1.9, tries a flat Institution/Role selector first
-  for the position/degree step if any exist; falls back to the original
-  select-or-create steps otherwise. Never touches governance.
-- `add-claim`: walks through Step 0-6 (select project -> problem -> action ->
-  claim/description -> metrics -> evidence -> tags -> governance), single
-  transactional write, followed by an explicit
-  core.db.fill_pending_support_levels() call.
-
-NOTE (Aug 2026): the education-track mid-level entity is called `degree`
-in the actual Postgres schema (table `degree`, column `degree_id`,
-`degree_name`), NOT `education`/`education_id`.
-
-Design notes (per Aug 2026 review):
-- --project-id is OPTIONAL on add-claim. If omitted, the user is walked
-  through a flat, single-step project selector (see
-  _select_project_interactively) that joins across both the work track
-  (company/position/project) and education track (school/degree/project).
-- description prompt wording no longer overlaps with action's wording.
-- evidence_type is a fixed numbered menu; evidence_level is auto-derived.
-- work/education track selection in add-project is a fixed numbered menu.
-- add-project's position/degree step (v1.9) prefers a flat join-based
-  selector over the original company-then-position drill-down, when
-  existing rows are available -- consistent with add-claim's project
-  selector philosophy of "join and flatten wherever the FK chain allows
-  it, rather than making the user click through every parent level."
-- add-company/add-school/add-position/add-degree let entities be staged
-  incrementally, reusing the exact same resolver helpers as add-project.
-- Tags are NOT typed by the user; LLM proposes from in-memory content,
-  user reviews/edits.
-- Governance: support_level is NEVER computed or asked in this file --
-  the governance row is written with support_level=None, and
-  core.db.fill_pending_support_levels() is called explicitly, exactly
-  once, right after add-claim's own transaction commits.
-- (v1.9/v1.10) target_position on a network row may be left blank --
-  _resolve_target_positions() allows the very first prompt to be blank,
-  returning an empty list, which gencv/identity_selector.py v3 treats as
-  a UNIVERSAL link (applies to any job title). add_network()'s closing
-  message explicitly distinguishes this case ("Applies to: ANY job
-  title") from a link scoped to specific titles, so the user gets
-  immediate confirmation of which behavior they just configured.
-
-LANGUAGE POLICY: the entire interface is English.
 """
 
 from __future__ import annotations
@@ -113,32 +12,10 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from core.db import (
-    ActionORM,
-    MetricORM,
-    ClaimORM,
-    ClaimTagORM,
-    CompanyORM,
-    DegreeORM,
-    EvidenceORM,
-    GovernanceORM,
-    IdentityORM,
-    NetworkORM,
-    PositionORM,
-    ProblemORM,
-    ProjectORM,
-    SchoolORM,
-    TagORM,
-    create_row,
-    fill_pending_support_levels,
-    fuzzy_find_candidates,
-    get_session,
-    list_rows,
-    select_or_create,
-)
+from core.db import * # *ORM, *OPTIONS, functions
 from core.source_reader import FileReadError, UnsupportedFileTypeError, read_source
 from core.llm_client import get_llm_client, LLMResponse
-from core.llm_reviewer import parse_review_input
+from core.llm_reviewer import confirm_field, confirm_fields_multiple
 from onboard.prompts import *
 
 app = typer.Typer(help="Add experience entries to database.")
@@ -165,51 +42,30 @@ def _prompt_date(label: str, allow_blank: bool = False) -> Optional[date]:
 
 def _confirm_or_edit(draft, label: str, system_prompt: str) -> str:
     console.print(f"\n[bold]{label} (LLM draft)[/bold]")
-    while True:
-        console.print(draft.text)
-        raw = input(
-            "  Accept this writing? (Enter to accept / 'r' or 'r <text>' to regenerate / "
-            "'o <text>' to override): "
-        ).strip()
-        decision = parse_review_input(raw)
-
-        if decision.action == "regenerate":
-            if system_prompt is None:
-                console.print(f"[red]  Missing REGENERATE_SYSTEM_PROMPT; regeneration not supported. [/red]")
-                break
-            console.print(f"[bold]  Regenerating...[/bold]")
-            user_prompt = build_regenerate_prompt(
-                previous_output=draft.text,
-                steering_note=decision.value,
-            )
-            draft = get_llm_client().generate_text(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            )
-            continue
-
-        if decision.action == "override":
-            console.print(f"  [green]-> Using manually entered text[/green]")
-            return decision.value
-
-        if decision.action == "accept":
-            console.print(f"  [green]-> Using this LLM-regenerated text[/green]")
-            return draft.text
-
-        console.print(f"[red][Error] {decision.value}[/red]")
+    return confirm_field(draft.text, system_prompt)
 
 # def _confirm_final_write() -> bool:
 #     return typer.confirm("\nConfirm write to database?", default=True)
 
-def _create_table(items: list, columns: list, title: str | None = None) -> None:
+def _create_table(items: list, columns: list, title: str | None = None, add_0: list | None = None) -> None:
 
     columns = ["#"] + columns
-    
+
     table = Table(title=title)
     for column in columns: # header
         table.add_column(column)
-    for idx, item in enumerate(items, start=1): # values
-        table.add_row(str(idx), *item)
+
+    if items: # if there's element inside items list
+        if isinstance(items[0], (tuple, list)):
+            if add_0:
+                table.add_row(0, *add_0)
+            for idx, item in enumerate(items, start=1): # values
+                table.add_row(str(idx), *item)
+        else:
+            if add_0:
+                table.add_row(0, add_0)
+            for idx, item in enumerate(items, start=1): # values
+                table.add_row(str(idx), item)
 
     console.print(table)
 
@@ -265,23 +121,23 @@ def _select_from_menu(options: list[str], title: str, allow_blank: bool = False)
     metric_confidence, work/education track). If `allow_blank` is True,
     option 0 lets the user skip the field entirely (returns None).
     """
-    table = Table(title=title)
-    table.add_column("#")
-    table.add_column("Option")
+    columns = ["Option"]
     if allow_blank:
-        table.add_row("0", "[Skip]")
-    for idx, option in enumerate(options, start=1):
-        table.add_row(str(idx), option)
-    console.print(table)
-    # columns = ["Option"]
-    # if allow_blank:
-    #     # add 0
-    # _create_table(options, columns, title)
+        _create_table(options, columns, title, add_0 = ["[Skip]"])
+    else:
+        _create_table(options, columns, title)
 
     choice = typer.prompt("Select a number", type=int)
     if allow_blank and choice == 0:
         return None
     return options[choice - 1]
+
+def _select_existing_track():
+    return _select_from_menu(
+        TRACK_OPTIONS,
+        title="Is this a work experience or education experience?",
+        allow_blank=False,
+    )
 
 def _select_existing_company(session) -> CompanyORM:
     """
@@ -909,25 +765,23 @@ def _resolve_project(
 @app.command("add-project")
 def add_project() -> None:
     """Interactively add a new project record under a work or education experience."""
-    track = _select_from_menu(
-        TRACK_OPTIONS,
-        title="Is this a work experience or education experience?",
-        allow_blank=False,
-    )
-
     project_id: Optional[UUID] = None
-
+    track = _select_existing_track()
     with get_session() as session:
         if track == "work":
             position = _select_existing_position(session)
             if position is None:
-                company = _resolve_company(session)
+                company = _select_existing_company(session)
+                if company is None:
+                    company = _resolve_company(session)
                 position = _resolve_position(session, company)
             project = _resolve_project(session, position_id=position.position_id, degree_id=None)
         else:
             degree = _select_existing_degree(session)
             if degree is None:
-                school = _resolve_school(session)
+                school = _select_existing_school(session)
+                if school is None:
+                    school = _resolve_school(session)
                 degree = _resolve_degree(session, school)
             project = _resolve_project(session, position_id=None, degree_id=degree.degree_id)
 
@@ -1043,13 +897,8 @@ def _review_metric_drafts(drafts: list[tuple[str, str]]) -> list[tuple[str, str,
         console.print("[dim](LLM did not detect any quantifiable metrics)[/dim]")
 
     finalized: list[tuple[str, str, str, str]] = []
-    # confirm_fields_multiple(drafts, columns)
-    for idx, (m_desc, m_value) in enumerate(drafts, start=1):
-        keep = typer.confirm(f'Keep metric no. {idx}?', default=True)
-        if not keep:
-            continue
-        edited_desc = typer.prompt("Press Enter to accept, or type new text to override", default=m_desc)
-        edited_value = typer.prompt("Press Enter to accept, or type new text to override", default=m_value)
+    edited = confirm_fields_multiple(drafts, columns, ["You are rewriter for metric name. Rewrite the name.", "You are rewriter for metric value. Make it to romaric numbers."])
+    for edited_desc, edited_value in edited:
         confidence = _select_from_menu(
             METRIC_CONFIDENCE_OPTIONS,
             title=f'Confidence level for "{edited_desc}"?',
@@ -1114,18 +963,19 @@ def _select_evidence_type() -> tuple[str, str]:
     evidence_type, evidence_level = EVIDENCE_TYPE_TO_LEVEL[idx - 1]
     return evidence_type, evidence_level
 
-def _resolve_one_evidence(session, claim: ClaimORM, project: ProjectORM | None = None) -> EvidenceORM:
-    evidence_type, evidence_level = _select_evidence_type()
-    evidence_location: str = None
-    if project:
-        is_from_project_context_source = typer.prompt(f"Would you like to use {project.project_context_source} as evidence source?", default="Y", show_default=False)
-        evidence_location = project.project_context_source if is_from_project_context_source else typer.prompt(
-            "Any other evidence location/link? (e.g. file path, URL, optional)", default="", show_default=False
-        )
+def _resolve_one_evidence(session, claim: ClaimORM, project: ProjectORM | None = None) -> EvidenceORM: 
+
+    if project and project.project_context_source:
+        if typer.prompt(
+            f"Would you like to use {project.project_context_source} as evidence source?", 
+            default="N"        
+        ):
+            evidence_location = project.project_context_source
+        else:
+            evidence_location = typer.prompt("Any other evidence location/link? (e.g. file path, URL) (optional)")
     else:
-        evidence_location = typer.prompt(
-            "Evidence location/link? (e.g. file path, URL, optional)", default="", show_default=False
-        )
+        evidence_location = typer.prompt("Evidence location/link? (e.g. file path, URL)") # not optional here
+    evidence_type, evidence_level = _select_evidence_type()
     console.print(f"[dim]Corresponding evidence level: {evidence_level} (auto-derived from evidence type)[/dim]")
 
     return create_row(
@@ -1140,8 +990,8 @@ def _resolve_one_evidence(session, claim: ClaimORM, project: ProjectORM | None =
     )
 
 def _resolve_evidences(session, claim: ClaimORM, project: ProjectORM | None = None) -> list[EvidenceORM]:
-    evidences: list[EvidenceORM] = [_resolve_one_evidence(session, claim, project)]
-    while typer.confirm("Any other evidence to add for this claim?", default=False):
+    evidences: list[EvidenceORM] = []
+    while typer.confirm("Any evidences?", default="N"):
         evidences.append(_resolve_one_evidence(session, claim, project))
     return evidences
 
@@ -1154,13 +1004,11 @@ def _confirm_or_edit_tags(proposed: list[tuple[str, str]]) -> list[tuple[str, st
     columns = ["Tag", "Category"]
     _create_table(proposed, columns)
 
-    from core.llm_reviewer import confirm_fields_multiple
     edited = confirm_fields_multiple(proposed, columns, [
         "You aew a tag naming helper. Please modify the input to the terminology.", 
         "You are a tag category classifier. Please identify the corresponding name into either 'tool', 'capability', or 'context'"
     ])
 
-    from core.db import TAG_CATEOGRY
     result: list[tuple[str, str]] = []
     for name, category in edited:
         if name and category in TAG_CATEOGRY:
@@ -1266,44 +1114,37 @@ def _resolve_governance(session, claim: ClaimORM) -> GovernanceORM:
 # add-claim command
 # ---------------------------------------------------------------------------
 
-def _select_existing_project(session) -> Optional[ProjectORM]:
-    rows = (
-        session.query(
-            CompanyORM.company_name.label("institution"),
-            PositionORM.title.label("role"), 
-            ProjectORM
+def _select_existing_project(session, orm) -> Optional[ProjectORM]:
+    if isinstance(orm, PositionORM):
+        rows = (
+            session.query(ProjectORM)
+            .join(PositionORM, ProjectORM.position_id == PositionORM.position_id)
+            .join(CompanyORM, PositionORM.company_id == CompanyORM.company_id)
+            .filter(PositionORM.position_id == orm.position_id)
         )
-        .join(PositionORM, ProjectORM.position_id == PositionORM.position_id)
-        .join(CompanyORM, PositionORM.company_id == CompanyORM.company_id)
-        .all()
-    )
-    rows = rows + (
-        session.query(
-            SchoolORM.school_name.label("institution"),
-            DegreeORM.degree_name.label("role"), 
-            ProjectORM
+    elif isinstance(orm, DegreeORM):
+        rows = (
+            session.query(ProjectORM)
+            .join(DegreeORM, ProjectORM.degree_id == DegreeORM.degree_id)
+            .join(SchoolORM, DegreeORM.school_id == SchoolORM.school_id)
+            .filter(DegreeORM.degree_id == orm.degree_id)
         )
-        .join(DegreeORM, ProjectORM.degree_id == DegreeORM.degree_id)
-        .join(SchoolORM, DegreeORM.school_id == SchoolORM.school_id)
-        .all()
-    )
     if not rows:
         return None
     
     table = Table(title="Select an existing project") #, or create a new one")
     table.add_column("#")
-    table.add_column("Institution")
-    table.add_column("Role")
     table.add_column("Project")
-    # table.add_row("0", "[Create new]", "", "")
+    table.add_column("Project Context")
+    table.add_row("0", "[Create new]", "")
     for idx, row in enumerate(rows, start=1):
-        table.add_row(str(idx), row.institution or "", row.role or "", row.ProjectORM.project_name or "")
+        table.add_row(str(idx), row.project_name or "", row.project_context or "")
     console.print(table)
 
     choice = typer.prompt("Select a number", type=int)
     if choice == 0:
         return None
-    return rows[choice - 1].ProjectORM
+    return rows[choice - 1]
 
 def _find_project(
     session,
@@ -1326,7 +1167,25 @@ def add_claim(
     """Interactively add a problem -> action -> claim -> metric(s) -> evidence(s) -> tag(s) -> governance record."""
     claim_id: Optional[UUID] = None
     with get_session() as session:
-        project = _find_project(session, project_id) if project_id else _select_existing_project(session)
+        project = _find_project(session, project_id)
+        if not project_id:
+            track = _select_existing_track()
+            if track == "work":
+                position = _select_existing_position(session)
+                if position is None:
+                    company = _select_existing_company(session)
+                    position = _resolve_position(session, company)
+                project = _select_existing_project(session, position)
+                if project is None:
+                    project = _resolve_project(session, position_id=position.position_id, degree_id=None)
+            else:
+                degree = _select_existing_degree(session)
+                if degree is None:
+                    school = _select_existing_school(session)
+                    degree = _resolve_degree(session, school)
+                project = _select_existing_project(session, degree)
+                if project is None:
+                    project = _resolve_project(session, position_id=None, degree_id=degree.degree_id)
         problem = _resolve_problem(session, project)
         action = _resolve_action(session, problem)
         claim = _resolve_claim(session, action)
@@ -1363,8 +1222,6 @@ def _resolve_llm_response(llm_response: LLMResponse) -> list:
 
 
 def _resolve_claims(project: ProjectORM) -> list:
-    """
-    """
     source: str = project.project_context_source
     has_source: bool = False
     path: str
@@ -1402,16 +1259,16 @@ def _resolve_claims(project: ProjectORM) -> list:
 
 
 def add_claims(
-        project_id: Optional[UUID] = typer.Option(
+        project_id: UUID = typer.Option(
         None,
         "--project-id",
-        help="UUID of the project to add a claim to. If omitted, an interactive selector is shown.",
+        help="UUID of the project to add a claim to.", # If omitted, an interactive selector is shown.",
     ),
 ):
     """Bulk add claims to database through source files or URLs."""
     project: ProjectORM = None
     with get_session() as session:
-        project = _find_project(session, project_id) if project_id else _select_existing_project(session)
+        project = _find_project(session, project_id) # if project_id else _select_existing_project(session)
 
     raw_claims = _resolve_claims(project) 
     for idx, raw_claim in enumerate(raw_claims):

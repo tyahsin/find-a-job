@@ -256,7 +256,7 @@ class ProjectORM(Base):
         CheckConstraint(
             "(position_id IS NOT NULL AND degree_id IS NULL) OR "
             "(position_id IS NULL AND degree_id IS NOT NULL)",
-            name="project_exactly_one_parent",
+            name="project_check", # project_exactly_one_parent 
         ),
     )
 
@@ -284,9 +284,20 @@ class ProblemORM(Base):
 # ---------------------------------------------------------------------------
 # Action layer -- belongs to a problem
 # ---------------------------------------------------------------------------
+ROLE_SCOPE_OPTIONS = [
+    "led",
+    "collaborated",
+    "supported",
+]
 
 class ActionORM(Base):
     __tablename__ = "action"
+    __table_args__ = (
+        CheckConstraint(
+            f"role_scope IN ({ROLE_SCOPE_OPTIONS})",
+            name="role_scope_check",
+        ),
+    )
 
     action_id = _uuid_pk()
     problem_id = Column(PGUUID(as_uuid=True), ForeignKey("problem.problem_id"))
@@ -304,6 +315,12 @@ class ClaimORM(Base):
     action_id = Column(PGUUID(as_uuid=True), ForeignKey("action.action_id"))
     claim_description = Column(Text)  # core CV bullet content (formerly result_statement)
 
+METRIC_CONFIDENCE_OPTIONS: list[str] = [
+    "precise",
+    "estimated",
+    "rough impression",
+]
+
 class MetricORM(Base):
     """
     One-to-many: a single claim can carry multiple quantifiable metrics
@@ -317,6 +334,12 @@ class MetricORM(Base):
     calibrated).
     """
     __tablename__ = "metric"
+    __table_args__ = (
+        CheckConstraint(
+            f"metric_confidence IN ({METRIC_CONFIDENCE_OPTIONS})",
+            name="metric_confidence_check",
+        ),
+    )
 
     metric_id = _uuid_pk()
     claim_id = Column(PGUUID(as_uuid=True), ForeignKey("claim.claim_id"))
@@ -352,7 +375,7 @@ class TagORM(Base):
     __table_args__ = (
         CheckConstraint(
             f"tag_category IN ({TAG_CATEOGRY})",
-            name="tag_tag_category_valid",
+            name="tag_category_check",
         ),
     )
 
@@ -446,7 +469,7 @@ class ApplicationORM(Base):
     __table_args__ = (
         CheckConstraint(
             f"current_stage IN ({APPLICATION_CURRENT_STAGE_OPTIONS})",
-            name="application_current_stage_valid",
+            name="application_current_stage_check",
         ),
     )
 
