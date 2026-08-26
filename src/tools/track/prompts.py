@@ -1,6 +1,5 @@
 """
 track/prompts.py
-Version: v3 (2026-08-20)
 """
 
 from __future__ import annotations

@@ -69,7 +69,7 @@ def _create_table(items: list, columns: list, title: str | None = None, add_0: s
 
     console.print(table)
 
-def _select_from_fuzzy_candidates(candidates, label_fields: list[str]):
+def _select_from_fuzzy_candidates(candidates, label_fields: list[str], require_choice=True):
     """
     Shows fuzzy match candidates and lets the user pick one, or choose to
     create a new row instead. Returns the chosen ORM object, or None if
@@ -80,10 +80,11 @@ def _select_from_fuzzy_candidates(candidates, label_fields: list[str]):
     add_0 = "[Create new]"
     _create_table(candidates, label_fields, title, add_0)
 
-    choice = typer.prompt("Select a number", type=int)
-    if choice == 0:
-        return None
-    return candidates[choice - 1][0]
+    if require_choice:
+        choice = typer.prompt("Select a number", type=int)
+        if choice == 0:
+            return None
+        return candidates[choice - 1][0]
 
 def _select_from_list(rows, columns: list[tuple[str, str]], title: str, allow_new_label: Optional[str] = None):
     """
