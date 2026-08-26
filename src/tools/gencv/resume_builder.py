@@ -309,7 +309,7 @@ def build_cv_yaml(
         project_entries = build_project_entries(session, claim_ids, description_overrides)
         relevant_degrees = select_relevant_degrees(session, claim_ids, job_description)
         education_entries = build_education_entries(session, relevant_degrees)
-        skills_entries = build_skill_entries(session, claim_ids, job_description)
+        # skills_entries = build_skill_entries(session, claim_ids, job_description)
     summary_entry = build_summary_entry(experience_entries, project_entries, education_entries, job_description)
 
     cv_block = {
@@ -324,7 +324,7 @@ def build_cv_yaml(
 
     sections = {}
     sections["summary"] = [summary_entry]
-    sections["skills"] = skills_entries
+    # sections["skills"] = skills_entries
     sections["experience"] = experience_entries
     sections["education"] = education_entries
     if project_entries:
@@ -372,16 +372,17 @@ def render_pdf(
 
     # save .yaml for reference 
     yaml_data = {}
-    yaml_path = pdf_path.parent / pdf_path.split("/")[-1].replace("pdf", "yaml")
+    yaml_path = pdf_path.parent / pdf_path.with_suffix(".yaml") #.split("/")[-1].replace("pdf", "yaml")
 
     for file in [cv_yaml_path, design_path, locale_path, settings_path]:
+        print(file)
         if not file.exists():
             print(f"[ERROR] 找不到檔案: {f}", file=sys.stderr)
             sys.exit(1)
         with open(file, "r", encoding='utf-8') as f:
-            data = yaml.safe_load(file)
+            data = yaml.safe_load(f)
             if data:
-                yaml_data[file.split('/')[-1].split('.')[0]] = data
+                yaml_data[str(file).split('/')[-1].split('.')[0]] = data
     with open(yaml_path, "w", encoding='utf-8') as f:
         yaml.safe_dump(yaml_data, f, default_flow_style=False)
 

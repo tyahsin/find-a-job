@@ -157,16 +157,19 @@ def confirm_field(draft: str, system_prompt: str, hint: str | None = None) -> st
         decision = parse_review_input(raw)
 
         if decision.action == "regenerate":
-            print(f"  Regenerating...\n")
-            user_prompt = build_regenerate_user_prompt(
-                previous_output=draft,
-                steering_note=decision.value,
-            )
-            client = get_llm_client()
-            draft = client.generate_text(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            ).text
+            if system_prompt:
+                print(f"  Regenerating...\n")
+                user_prompt = build_regenerate_user_prompt(
+                    previous_output=draft,
+                    steering_note=decision.value,
+                )
+                client = get_llm_client()
+                draft = client.generate_text(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                ).text
+            else:
+                return ValueError("Missing system prompt for regeneration.")
         elif decision.action == "override":
             print(f"  -> Using manually entered text\n")
             return decision.value

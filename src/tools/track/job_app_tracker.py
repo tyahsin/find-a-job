@@ -39,7 +39,6 @@ from core.db import (
     select_or_create,
 )
 
-
 def find_or_create_job(
     company_name: str,
     job_title: str,

@@ -16,12 +16,106 @@ from track.job_app_tracker import (
     record_application,
     update_stage,
 )
-from track.job_extractor import JOB_FIELDS, extract_job_fields
+
 from core.source_reader import read_source
-from core.llm_reviewer import confirm_fields_once
+from core.db import JobORM, get_session, fuzzy_find_candidates, create_row
+# from core.llm_client import get_llm_client
+from core.llm_reviewer import confirm_fields_once, confirm_fields_multiple
+from core.source_reader import FileReadError, UnsupportedFileTypeError, read_source
+
+from onboard.cli import (
+    _select_from_fuzzy_candidates,
+    # _confirm_or_edit
+)
+from track.prompts import JOB_FIELDS, extract_job_fields
+
 
 app = typer.Typer(help="Collect jobs and track applications.")
 
+
+def _select_existing_job(session, column: str, keyword: str) -> str:
+    label_field = ["job_id", "company_name", "job_title"]
+
+    candidates = fuzzy_find_candidates(session, JobORM, column, keyword)
+    if candidates:
+        chosen = _select_from_fuzzy_candidates(candidates, label_field)
+        if chosen is not None:
+            return chosen # job_id: str (not UUID due to type coersion)
+
+def _create_job_from_user(
+    session,
+    company_name: str,
+    job_title: str,
+    job_location: str,
+    job_description: str,
+    source_url: str,
+    date_posted: date,
+    contact_name: str,
+    contact_email: str,
+) -> JobORM:
+    return create_row(
+        session,
+        JobORM,
+        {
+            "company_name": company_name,
+            "job_title": job_title,
+            "job_location": job_location,
+            "job_description": job_description,
+            "source_url": source_url,
+            "date_posted": date_posted,
+            "contact_name": contact_name,
+            "contact_email": contact_email,
+        }
+    )
+
+def _create_job_from_source(session, source) -> JobORM:
+    jd_text = read_source(source)
+    result = extract_job_fields(jd_text, source)
+    edited = confirm_fields_multiple(list(result.values()), list(result.keys()), [""] * len(result))
+    finalized = {item[0]: item[1] for item in edited}
+    return _create_job_from_user(session, *finalized)
+
+def _resolve_job(session, source: str | None = None) -> JobORM:
+    if source:
+        while True:
+            try:
+                job = _create_job_from_source(session, source)
+                break
+            except (FileReadError, UnsupportedFileTypeError) as exc:
+                source = typer.prompt("Enter file path (.txt / .md / .pdf) or URL")
+        return job
+    else:
+        job_fields = {}
+        for field in JOB_FIELDS:
+            prompt_text = f"{field.replace('_', ' ').capitalize()}"
+            if  "date" in field:
+                prompt_text += f" (in format yyyy-MM-dd; optional)" 
+            job_fields[field] = typer.prompt(f"{prompt_text}", default="", show_default=False)
+        return _create_job_from_user(session, *job_fields)
+
+# list_jobs
+
+@app.command("test")        
+def add_job(
+    column: str = typer.Option(..., "-c", "--column"), 
+    keyword: str = typer.Option(..., "-k", "--keyword"), 
+):
+    job_id: str = None
+    with get_session() as session:
+        job_id = _select_existing_job(session, column, keyword)
+        if not job_id:
+            source = typer.prompt("Enter file path (.txt / .md / .pdf) or URL", default="", show_default=False)
+            job = _resolve_job(session, source)
+            job_id = job.job_id
+    return str(job_id)
+
+
+# def _select_existing_application():
+#     ...
+
+# def _resolve_application():
+#     ...
+    
 
 @app.command("find-job")
 def find_job(
@@ -42,7 +136,7 @@ def find_job(
         typer.echo(f"job_id: {job_id}")
 
 
-@app.command("add-job")
+# @app.command("add-job")
 def add_job(
     company_name: Optional[str] = typer.Option(None, "--company", help="Company name"),
     job_title: Optional[str] = typer.Option(None, "--title", help="Job title"),

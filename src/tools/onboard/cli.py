@@ -47,43 +47,38 @@ def _confirm_or_edit(draft, label: str, system_prompt: str) -> str:
 # def _confirm_final_write() -> bool:
 #     return typer.confirm("\nConfirm write to database?", default=True)
 
-def _create_table(items: list, columns: list, title: str | None = None, add_0: list | None = None) -> None:
-
-    columns = ["#"] + columns
+def _create_table(items: list, columns: list, title: str | None = None, add_0: str | None = None) -> None:
 
     table = Table(title=title)
-    for column in columns: # header
+    for column in ["#"] + columns: # header
         table.add_column(column)
-
+    if add_0:
+        table.add_row("0", add_0)
     if items: # if there's element inside items list
         if isinstance(items[0], (tuple, list)):
-            if add_0:
-                table.add_row(0, *add_0)
-            for idx, item in enumerate(items, start=1): # values
-                table.add_row(str(idx), *item)
+            if isinstance(items[0][0], (JobORM)):
+                for idx, item in enumerate(items, start=1): # values
+                    to_list = [str(getattr(item[0], column)) for column in columns]
+                    table.add_row(str(idx), *to_list)
+            else:
+                for idx, item in enumerate(items, start=1): # values
+                    table.add_row(str(idx), *item)
         else:
-            if add_0:
-                table.add_row(0, add_0)
             for idx, item in enumerate(items, start=1): # values
                 table.add_row(str(idx), item)
 
     console.print(table)
 
-def _select_from_fuzzy_candidates(candidates, label_field: str):
+def _select_from_fuzzy_candidates(candidates, label_fields: list[str]):
     """
     Shows fuzzy match candidates and lets the user pick one, or choose to
     create a new row instead. Returns the chosen ORM object, or None if
     the user wants to create new.
     """
-    table = Table(title=f"Found {len(candidates)} similar existing record(s)")
-    table.add_column("#")
-    table.add_column("Name")
-    table.add_column("Similarity")
 
-    table.add_row("0", "[Create new]", "")
-    for idx, (row, score) in enumerate(candidates, start=1):
-        table.add_row(str(idx), getattr(row, label_field), f"{score:.0f}%")
-    console.print(table)
+    title = f"Found {len(candidates)} similar existing record(s)"
+    add_0 = "[Create new]"
+    _create_table(candidates, label_fields, title, add_0)
 
     choice = typer.prompt("Select a number", type=int)
     if choice == 0:
@@ -123,7 +118,7 @@ def _select_from_menu(options: list[str], title: str, allow_blank: bool = False)
     """
     columns = ["Option"]
     if allow_blank:
-        _create_table(options, columns, title, add_0 = ["[Skip]"])
+        _create_table(options, columns, title, add_0 = "[Skip]")
     else:
         _create_table(options, columns, title)
 
@@ -442,7 +437,7 @@ def _resolve_company(session) -> CompanyORM:
     name = typer.prompt("Company name")
     candidates = fuzzy_find_candidates(session, CompanyORM, "company_name", name)
     if candidates:
-        chosen = _select_from_fuzzy_candidates(candidates, "company_name")
+        chosen = _select_from_fuzzy_candidates(candidates, ["company_name"])
         if chosen is not None:
             return chosen
 
@@ -458,7 +453,7 @@ def _resolve_school(session) -> SchoolORM:
     name = typer.prompt("School name")
     candidates = fuzzy_find_candidates(session, SchoolORM, "school_name", name)
     if candidates:
-        chosen = _select_from_fuzzy_candidates(candidates, "school_name")
+        chosen = _select_from_fuzzy_candidates(candidates, ["school_name"])
         if chosen is not None:
             return chosen
 

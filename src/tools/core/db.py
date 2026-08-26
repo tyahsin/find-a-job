@@ -553,7 +553,7 @@ def fuzzy_find_candidates(
     if not all_rows:
         return []
 
-    choices = {row: getattr(row, name_field) or "" for row in all_rows}
+    choices = {row: getattr(row, name_field).lower() or "" for row in all_rows}
     matches = process.extract(
         query_name,
         choices,
@@ -561,8 +561,8 @@ def fuzzy_find_candidates(
         limit=limit,
     )
     # rapidfuzz's process.extract with a dict returns (choice_value, score, key)
-    results = [(row, score) for _value, score, row in matches]
-    return [(row, score) for row, score in results if score >= FUZZY_MATCH_THRESHOLD]
+    results = [(row, score) for _value, score, row in matches if score >= FUZZY_MATCH_THRESHOLD]
+    return sorted(results, key=lambda x: x[1], reverse=True)
 
 def create_row(session: Session, model: Type[ModelT], values: dict) -> ModelT:
     """Straight insert, no matching -- used once the CLI layer has confirmed
