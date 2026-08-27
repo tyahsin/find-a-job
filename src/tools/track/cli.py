@@ -12,7 +12,14 @@ from typing import Optional
 import typer
 
 from core.source_reader import read_source
-from core.db import JobORM, ApplicationORM, APPLICATION_CURRENT_STAGE_OPTIONS, get_session, fuzzy_find_candidates, create_row, select_or_create
+from core.db import (
+    JobORM, 
+    ApplicationORM, 
+    APPLICATION_CURRENT_STAGE_OPTIONS, 
+    get_session, 
+    fuzzy_find_candidates, 
+    create_row
+)
 from core.llm_reviewer import confirm_fields_multiple
 from core.source_reader import FileReadError, UnsupportedFileTypeError, read_source
 

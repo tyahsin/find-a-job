@@ -10,7 +10,7 @@ from typing import Literal
 ReviewAction = Literal["accept", "regenerate", "override", "invalid", "skip"]
 
 from core.llm_client import get_llm_client
-from core.prompts import build_regenerate_user_prompt
+from onboard.prompts import build_regenerate_user_prompt
 
 @dataclass(frozen=True)
 class ReviewDecision:

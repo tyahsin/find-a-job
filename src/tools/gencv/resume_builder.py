@@ -372,7 +372,7 @@ def render_pdf(
 
     # save .yaml for reference 
     yaml_data = {}
-    yaml_path = pdf_path.parent / pdf_path.with_suffix(".yaml") #.split("/")[-1].replace("pdf", "yaml")
+    yaml_path = pdf_path.parent / pdf_path.with_suffix(".yaml")
 
     for file in [cv_yaml_path, design_path, locale_path, settings_path]:
         print(file)
