@@ -1,152 +1,56 @@
-"""
-claim_ranker.py
-Version: v3 (2026-08-19)
+# claim_ranker.py
 
-Changelog:
-- v3 (2026-08-19): Migrated the REGENERATE gate in
-  _confirm_project_selection() to the shared core.llm_reviewer.
-  parse_review_input() parser -- same single-line command contract as
-  experience_rewriter.py v6 / skill_grouper.py v3 / summary_writer.py v3:
-  'r' or 'r <text>' to regenerate (previously a two-step prompt: type
-  'r', then answer a separate steering-note question). The manual
-  override path is now spelled 'o <comma-separated numbers>' instead of
-  bare numbers -- keeps the input contract identical across all four
-  reviewers while still supporting this module's KEEP+DROP index-based
-  override. Plain 'o' with no numbers, or any unrecognized input, is now
-  explicitly invalid and re-prompts with an error. Regeneration semantics
-  (forcing the LLM fallback judgment on a project whose primary result
-  came from the deterministic tag algorithm, optionally guided by a
-  steering note, logged to CLAIM_RANKER_REGEN_LOG) are UNCHANGED from v2.
-- v2 (2026-08-19): Added a REGENERATE option to
-  _confirm_project_selection()'s lightweight confirmation gate, plus an
-  observation log for tracking how often it gets used -- see prior
-  changelog entry for full rationale (two-step prompt flow, since
-  replaced in v3 above).
-- v1 (2026-08-16): Initial version. Solves the "same-project claim
-  redundancy" problem via tag-Jaccard-based capability-diversity
-  selection, with an LLM fallback when tag coverage is insufficient.
-
-MAX_CLAIMS_PER_PROJECT = 2 (hard cap). Primary signal: Jaccard similarity
-over each claim's tag_name set -- deterministic, zero LLM calls in the
-common case. LLM fallback triggers on insufficient tag coverage OR
-(v2+) explicit user regenerate request.
-
-English-only prompts and output, per the project-wide LANGUAGE POLICY.
-"""
-
-from __future__ import annotations
-
-import json
-import re
-from collections import defaultdict
-from datetime import datetime, timezone
-from itertools import combinations
-from pathlib import Path
-
-from core.db import get_session
 from core.llm_client import get_llm_client
-from core.llm_reviewer import parse_review_input
-from gencv.experience_matcher import fetch_experience_contexts, fetch_tags_for_claims
+from core.llm_reviewer import confirm_decision, parse_decision_text, GroupDecision
 
-MAX_CLAIMS_PER_PROJECT = 2
+MAX_CLAIMS_PER_POSITION = 5
+MAX_CLAIMS_PER_PROJECT = 3
 
-# CLAIM_RANKER_REGEN_LOG = Path("claim_ranker_regeneration_log.jsonl")
+RANKER_SYSTEM_PROMPT = """You are a resume content curator. You will be given a job description and \
+several candidate experience records that ALL belong to the SAME group (one position, or one \
+project) and have ALREADY been judged relevant to this job -- your task is NOT to re-judge \
+relevance, it is to decide which to keep, which to merge together, and which to drop, so the \
+final set fits within {max_claims} record(s) while showing the candidate's range rather than \
+repeating the same capability.
 
-RANKER_SYSTEM_PROMPT = """You are a resume content curator. You will be given a job description and
-several candidate experience records that ALL belong to the SAME project
-and have ALREADY been judged relevant to this job -- your task is NOT to
-re-judge relevance, it is to pick which ones to keep when there are more
-candidates than the resume has room for.
+Prefer keeping records whose capabilities are DIFFERENT from each other (MECE: mutually \
+exclusive, collectively exhaustive). When two or more records describe essentially the same \
+underlying capability or accomplishment, propose merging them into one group rather than \
+keeping duplicates or arbitrarily dropping all but one -- the actual bullet fusion happens in a \
+later step, you are only grouping them here.
 
-Your task: identify the core CAPABILITY each record demonstrates, then
-select exactly {max_claims} record(s) whose capabilities are as DIFFERENT
-from each other as possible, so the resume shows the candidate's range
-rather than repeating the same strength.
+Note: records in this group may come from different projects under the same position. Two \
+records sharing a similar capability LABEL are NOT automatically merge candidates -- if they \
+come from different projects and each independently demonstrates that capability in a \
+distinct context, keeping both shows breadth across engagements and is not redundancy. Only \
+propose a merge when the records describe essentially the SAME underlying accomplishment or \
+fact, not merely a similar-sounding label.
 
 {steering_note_block}
 
-Strict rules (must follow):
-1. Every record given to you has already passed a relevance check -- do
-   not exclude a record for being "less relevant"; your only basis for
-   choosing is capability diversity (and the user's steering note, if
-   given, as an additional preference on TOP OF capability diversity --
-   never as a reason to select a record that wasn't already judged
-   relevant).
-2. If the candidate records are GENUINELY single-faceted, say so
-   explicitly and select the {max_claims} record(s) that best represent
-   the project's overall contribution instead. Do NOT invent or
-   exaggerate a capability distinction that isn't actually supported.
-3. Do not add any fact, number, or claim not already present in the
-   records given.
-4. Output must be in English, regardless of input language.
+Your output must be exactly this shape, nothing else. Within a line, separate "index:label" \
+pairs with A SEMICOLON (";"), NEVER a comma. Every label -- in KEEP, MERGE, or DROP -- must be \
+AT MOST 3 WORDS and contain NO symbols or punctuation at all (no commas, hyphens, slashes, \
+parentheses, quotes, numbers-as-references like "#2" -- letters and single spaces only).
+Line 1: KEEP <semicolon-separated "index:label" pairs, or NONE> -- label is a short capability \
+tag naming what THAT record demonstrates (e.g. "API Integration", "Stakeholder Alignment", \
+"Data Analysis").
+Following lines (zero or more): MERGE <semicolon-separated "index:label" pairs> -- EXACTLY 2 or \
+more numbers per line, one merge group per line; members of the same MERGE line should share \
+the same (or nearly the same) label, since that's the reason they're being grouped. Never write \
+a MERGE line with only one number -- if a record has nothing to merge with, put it under KEEP \
+(or DROP) instead.
+Final line: DROP <semicolon-separated "index:label" pairs, or NONE> -- label is a short reason \
+for WHY that record was dropped, same 3-word/no-symbol rule (e.g. "Redundant Coverage", \
+"Weakest Evidence", "Off Topic").
+Every record number shown to you must appear in EXACTLY ONE of KEEP, MERGE, or DROP. Never \
+invent a record number that wasn't shown to you, and never invent facts not present in the \
+records.
 
-Output format: first line is either "DIVERSE" or "SINGLE-FACETED". Second
-line is the selected record number(s), comma-separated (exactly
-{max_claims}, or fewer only if fewer than {max_claims} records were
-given). No other text."""
-
-RANKER_USER_PROMPT_TEMPLATE = """# Job Description
-{job_description}
-
-# Candidate records from the same project ({count} total, all already JD-relevant)
-{records_block}
-
-Output your assessment (DIVERSE or SINGLE-FACETED) and the {max_claims} selected record number(s):"""
+Example line: KEEP 1:API Integration; 4:Team Collaboration"""
 
 
-def _group_claims_by_project(claim_ids, contexts):
-    grouped = defaultdict(list)
-    for claim_id in claim_ids:
-        ctx = contexts.get(claim_id)
-        project_id = ctx.get("project_id") if ctx else None
-        key = project_id if project_id else f"__no_project__{claim_id}"
-        grouped[key].append(claim_id)
-    return grouped
-
-
-def _jaccard_similarity(tags_a, tags_b):
-    if not tags_a and not tags_b:
-        return 0.0
-    union = tags_a | tags_b
-    if not union:
-        return 0.0
-    return len(tags_a & tags_b) / len(union)
-
-
-def _select_by_tag_diversity(candidate_ids, tags_map, max_claims):
-    tag_sets = {cid: set(tags_map.get(cid, [])) for cid in candidate_ids}
-    if len(candidate_ids) <= max_claims:
-        return list(candidate_ids)
-
-    pairwise = {}
-    for a, b in combinations(candidate_ids, 2):
-        sim = _jaccard_similarity(tag_sets[a], tag_sets[b])
-        pairwise[(a, b)] = sim
-        pairwise[(b, a)] = sim
-
-    def avg_similarity_to(cid, others):
-        if not others:
-            return 0.0
-        return sum(pairwise[(cid, o)] for o in others) / len(others)
-
-    remaining = list(candidate_ids)
-    first = min(remaining, key=lambda cid: avg_similarity_to(cid, [c for c in remaining if c != cid]))
-    selected = [first]
-    remaining.remove(first)
-
-    while len(selected) < max_claims and remaining:
-        next_pick = min(remaining, key=lambda cid: avg_similarity_to(cid, selected))
-        selected.append(next_pick)
-        remaining.remove(next_pick)
-
-    return selected
-
-
-def _has_full_tag_coverage(candidate_ids, tags_map):
-    return all(tags_map.get(cid) for cid in candidate_ids)
-
-
-def _build_ranker_prompt(candidate_ids, contexts, job_description, max_claims, steering_note=None):
+def _build_records_block_and_index(candidate_ids, contexts):
     index_to_claim_id = {}
     lines = []
     for i, claim_id in enumerate(candidate_ids, 1):
@@ -155,171 +59,432 @@ def _build_ranker_prompt(candidate_ids, contexts, job_description, max_claims, s
             continue
         index_to_claim_id[i] = claim_id
         lines.append(
-            f"[{i}] Problem: {ctx.get('problem_description') or '(not provided)'}\n"
+            f"[{i}] Project context: {ctx.get('project_context') or '(not provided)'}\n"
+            f"    Problem: {ctx.get('problem_description') or '(not provided)'}\n"
             f"    Action: {ctx.get('action_description') or '(not provided)'}\n"
             f"    Result: {ctx.get('claim_description') or '(not provided)'}"
         )
-    records_block = "\n\n".join(lines)
+    return "\n\n".join(lines), index_to_claim_id
 
+
+def _build_context_block(avoid_note, steering_note):
+    parts = []
+    if avoid_note:
+        parts.append(
+            "The following capabilities/accomplishments are ALREADY well represented elsewhere "
+            "on this resume (from the work experience section, already finalized) -- avoid "
+            "selecting or merging toward records that would just repeat these; prefer records "
+            "that add a NEW facet not covered below (this is a preference, not a hard exclusion "
+            "-- if a record is genuinely the strongest option despite overlapping, you may still "
+            "keep it):\n" + avoid_note
+        )
     if steering_note:
-        steering_note_block = (
-            "The user was not satisfied with a previous automated selection for this "
-            "project and gave this steering note -- treat it as an additional preference "
-            "on top of capability diversity (never as license to select a record that "
-            "wasn't already judged relevant, or to invent facts not in the records):\n"
+        parts.append(
+            "The user was not satisfied with a previous automated selection for this group and "
+            "gave this steering note -- treat it as an additional preference on top of MECE "
+            "diversity (never as license to select a record that wasn't already judged relevant, "
+            "or to invent facts not in the records):\n"
             f'"{steering_note}"'
         )
-    else:
-        steering_note_block = ""
+    return "\n\n".join(parts)
 
-    user_prompt = RANKER_USER_PROMPT_TEMPLATE.format(
-        job_description=job_description,
-        count=len(index_to_claim_id),
-        records_block=records_block,
-        max_claims=max_claims,
+
+def _build_group_system_prompt(job_description, records_block, count, max_claims, context_block=""):
+    return (
+        RANKER_SYSTEM_PROMPT.format(max_claims=max_claims, steering_note_block=context_block)
+        + f"\n\nJob description:\n{job_description}\n\n"
+        + f"{count} candidate record(s) for this group (max {max_claims} may be kept):\n\n{records_block}"
     )
-    return user_prompt, index_to_claim_id, steering_note_block
 
 
-def _select_by_llm_judgment(candidate_ids, contexts, job_description, max_claims, steering_note=None):
-    user_prompt, index_to_claim_id, steering_note_block = _build_ranker_prompt(
-        candidate_ids, contexts, job_description, max_claims, steering_note
-    )
-    if not index_to_claim_id:
-        return candidate_ids[:max_claims], False
-
-    response = get_llm_client().generate_text(
-        system_prompt=RANKER_SYSTEM_PROMPT.format(max_claims=max_claims, steering_note_block=steering_note_block),
-        user_prompt=user_prompt,
-        temperature=0.0 if not steering_note else 0.3,
-        max_tokens=100,
-    )
-    lines = [l.strip() for l in response.text.strip().splitlines() if l.strip()]
-    is_single_faceted = bool(lines) and "SINGLE-FACETED" in lines[0].upper()
-
-    indices = []
-    if len(lines) >= 2:
-        indices = [int(n) for n in re.findall(r"\d+", lines[1])]
-    elif lines:
-        indices = [int(n) for n in re.findall(r"\d+", lines[0])]
-
-    selected = [index_to_claim_id[i] for i in indices if i in index_to_claim_id][:max_claims]
-    if not selected:
-        selected = candidate_ids[:max_claims]
-
-    return selected, is_single_faceted
-
-
-# def _log_regeneration_event(project_label, previous_method, steering_note):
-#     entry = {
-#         "timestamp": datetime.now(timezone.utc).isoformat(),
-#         "project_label": project_label,
-#         "previous_method": previous_method,
-#         "steering_note": steering_note or "(none provided)",
-#     }
-#     try:
-#         with CLAIM_RANKER_REGEN_LOG.open("a", encoding="utf-8") as f:
-#             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-#     except OSError as exc:
-#         print(f"  [Notice] Could not write regeneration observation log: {exc}")
-
-
-def _confirm_project_selection(project_label, kept_ids, dropped_ids, contexts, method_note,
-                                candidate_ids, job_description, max_claims):
-    """(v3) Uses core.llm_reviewer.parse_review_input(). Commands:
-    Enter=accept, 'r'/'r <text>'=regenerate (forces LLM fallback judgment),
-    'o <comma-separated numbers>'=manual override using 1-based positions
-    in KEEP+DROP order. Plain 'o' or unrecognized input is invalid and
-    re-prompts."""
-    if not dropped_ids:
-        return kept_ids
-
-    current_kept, current_dropped = kept_ids, dropped_ids
-    current_method_note = method_note
-
-    while True:
-        print(f"\n=== Project \"{project_label}\": narrowed from {len(current_kept) + len(current_dropped)} to {len(current_kept)} claim(s) ({current_method_note}) ===")
-        for cid in current_kept:
-            desc = contexts.get(cid, {}).get("claim_description", "")
-            print(f"  [KEEP] {desc}")
-        for cid in current_dropped:
-            desc = contexts.get(cid, {}).get("claim_description", "")
-            print(f"  [DROP] {desc}")
-        print("  (Dropped claims are excluded from THIS resume only -- they remain in your "
-              "database and may be selected again for a different job description.)")
-
-        raw = input(
-            "  Accept this selection? (Enter to accept / 'r' or 'r <text>' to regenerate / "
-            "'o <comma-separated numbers>' to override, using 1-based position in KEEP+DROP order): "
-        ).strip()
-        decision = parse_review_input(raw)
-
-        if decision.action == "regenerate":
-            steering_note = decision.value
-            # _log_regeneration_event(project_label, current_method_note, steering_note or "")
-
-            print("  Regenerating via LLM judgment...")
-            new_kept, is_single_faceted = _select_by_llm_judgment(
-                candidate_ids, contexts, job_description, max_claims, steering_note=steering_note
-            )
-            new_dropped = [cid for cid in candidate_ids if cid not in new_kept]
-            current_kept, current_dropped = new_kept, new_dropped
-            current_method_note = (
-                "LLM judgment: single-faceted, selected by overall fit (regenerated)"
-                if is_single_faceted
-                else "LLM judgment: capability diversity (regenerated)"
-            )
-            continue
-
-        if decision.action == "accept":
-            return current_kept
-
-        if decision.action == "override":
-            all_ids = current_kept + current_dropped
-            try:
-                indices = [int(x.strip()) for x in decision.value.split(",") if x.strip()]
-                override = [all_ids[i - 1] for i in indices]
-                print(f"  -> Using manually selected: {len(override)} claim(s)")
-                return override
-            except (ValueError, IndexError):
-                print("  [Error] Could not parse override numbers -- try again.")
-                continue
-
-        print(f"  [Error] {decision.value}")
-
-
-def rank_and_narrow_claims(claim_ids, job_description):
-    if not claim_ids:
-        return []
-
-    with get_session() as session:
-        contexts = fetch_experience_contexts(session, claim_ids)
-        tags_map = fetch_tags_for_claims(session, claim_ids)
-
-    grouped = _group_claims_by_project(claim_ids, contexts)
-    final_ids = []
-
-    for project_key, group_claim_ids in grouped.items():
-        if len(group_claim_ids) <= MAX_CLAIMS_PER_PROJECT:
-            final_ids.extend(group_claim_ids)
-            continue
-
-        project_label = contexts.get(group_claim_ids[0], {}).get("project_name") or project_key
-
-        if _has_full_tag_coverage(group_claim_ids, tags_map):
-            kept = _select_by_tag_diversity(group_claim_ids, tags_map, MAX_CLAIMS_PER_PROJECT)
-            method_note = "tag-based diversity selection"
-        else:
-            kept, is_single_faceted = _select_by_llm_judgment(
-                group_claim_ids, contexts, job_description, MAX_CLAIMS_PER_PROJECT
-            )
-            method_note = "LLM judgment: single-faceted, selected by overall fit" if is_single_faceted else "LLM judgment: capability diversity"
-
-        dropped = [cid for cid in group_claim_ids if cid not in kept]
-        confirmed = _confirm_project_selection(
-            project_label, kept, dropped, contexts, method_note,
-            group_claim_ids, job_description, MAX_CLAIMS_PER_PROJECT,
+def _propose_decision_with_retry(system_prompt, valid_indices, user_prompt, temperature, fallback_ids, attempts=2):
+    """Shared by claim-level and project-level selection: ask the LLM for a
+    KEEP/MERGE/DROP decision, retrying up to `attempts` times before falling
+    back to keeping fallback_ids (in order) with an honest 'Fallback
+    Selection' label -- never a fabricated reason."""
+    decision = None
+    for attempt in range(attempts):
+        response = get_llm_client().generate_text(
+            system_prompt=system_prompt, user_prompt=user_prompt, temperature=temperature,
         )
-        final_ids.extend(confirmed)
+        decision = parse_decision_text(response.text, valid_indices)
+        if decision is not None:
+            return decision
+        print(f"  [Notice] Attempt {attempt + 1}: could not parse a usable KEEP/MERGE/DROP "
+              "selection from the LLM.")
 
-    return final_ids
+    print(f"  [Notice] Falling back to the first {len(fallback_ids)} candidate(s) in input order -- "
+          "no reason is available for this fallback selection.")
+    return GroupDecision(
+        keep=fallback_ids, merge_groups=[],
+        labels={i: "Fallback Selection" for i in fallback_ids},
+    )
+
+
+def _decision_counts(decision, show_merge):
+    """Small shared helper: derive the kept/merged/dropped counts used in
+    both the combined header line and the body sections, so the two never
+    drift out of sync with each other."""
+    kept = len(decision.keep)
+    if show_merge:
+        merge_groups = len(decision.merge_groups)
+        merged_claims = sum(len(g) for g in decision.merge_groups)
+        return {"kept": kept, "merge_groups": merge_groups, "merged_claims": merged_claims,
+                "total": kept + merge_groups}
+    return {"kept": kept, "total": kept}
+
+
+def _render_decision_sections(decision, valid_indices, name_fn, show_merge=True):
+    """Shared renderer for both claim-level (KEEP/MERGE/DROP) and
+    project-level (KEEP/DROP only) decisions. name_fn(i) returns the display
+    text for record i; labels come from decision.labels. Returns only the
+    body -- callers prepend their own combined header line."""
+    def _labeled(i):
+        label = decision.labels.get(i)
+        suffix = f" ({label})" if label else ""
+        return f"  [{i}] {name_fn(i)}{suffix}"
+
+    lines = ["KEEP:"]
+    kept = sorted(decision.keep)
+    if not kept:
+        lines.append("  (none)")
+    lines.extend(_labeled(i) for i in kept)
+
+    claimed = set(decision.keep)
+    if show_merge:
+        lines.append("MERGE:")
+        if not decision.merge_groups:
+            lines.append("  (none)")
+        for group in decision.merge_groups:
+            lines.append("  [new]")
+            for i in group:
+                label = decision.labels.get(i)
+                suffix = f" ({label})" if label else ""
+                lines.append(f"  +  [{i}] {name_fn(i)}{suffix}")
+            claimed.update(group)
+
+    dropped = sorted(valid_indices - claimed)
+    lines.append("DROP:")
+    if not dropped:
+        lines.append("  (none)")
+    lines.extend(_labeled(i) for i in dropped)
+
+    return "\n".join(lines)
+
+
+def build_avoid_note(kept_items, contexts):
+    """Summarizes already-finalized items (typically Stage 2's work-track
+    result) into a note for a later stage's system prompt, so it can avoid
+    re-selecting/merging toward the same capabilities."""
+    lines = []
+    for item in kept_items:
+        reasons = item.get("reasons", {})
+        for cid in item["claim_ids"]:
+            label = reasons.get(cid)
+            desc = contexts[cid]["claim_description"]
+            prefix = f"{label}: " if label else ""
+            lines.append(f"- {prefix}{desc}")
+    return "\n".join(lines)
+
+
+def _decision_to_items(decision, index_to_claim_id, group_key, group_label, track):
+    items = []
+    for i in decision.keep:
+        cid = index_to_claim_id.get(i)
+        if cid:
+            items.append({
+                "kind": "single", "claim_ids": [cid],
+                "group_key": group_key, "group_label": group_label, "track": track,
+                "reasons": {cid: decision.labels.get(i)},
+            })
+    for group in decision.merge_groups:
+        pairs = [(i, index_to_claim_id[i]) for i in group if i in index_to_claim_id]
+        if len(pairs) >= 2:
+            items.append({
+                "kind": "merge", "claim_ids": [cid for _, cid in pairs],
+                "group_key": group_key, "group_label": group_label, "track": track,
+                "reasons": {cid: decision.labels.get(i) for i, cid in pairs},
+            })
+    return items
+
+
+def _serialize_decision_as_text(decision, all_indices):
+    def _tok(i):
+        return f"{i}:{decision.labels.get(i, 'reason unavailable')}"
+
+    lines = [f"KEEP {'; '.join(_tok(i) for i in sorted(decision.keep))}" if decision.keep else "KEEP NONE"]
+    for group in decision.merge_groups:
+        lines.append(f"MERGE {'; '.join(_tok(i) for i in group)}")
+
+    claimed = set(decision.keep) | {i for group in decision.merge_groups for i in group}
+    dropped = sorted(set(all_indices) - claimed)
+    lines.append(f"DROP {'; '.join(_tok(i) for i in dropped)}" if dropped else "DROP NONE")
+    return "\n".join(lines)
+
+
+def _render_group_decision(decision, contexts, index_to_claim_id, group_label):
+    """Renders a GroupDecision back into a human-readable preview, using the
+    SAME record numbers (1..N over this group's raw candidate list) that
+    appear in the KEEP/MERGE decision text itself. The header line combines
+    the group label with the KEEP/MERGE/DROP counts in one line, e.g.
+    '=== Proposed selection for X: 4 kept + 2 merged (1 group(s)) = 5 total ==='."""
+    def name_fn(i):
+        return contexts[index_to_claim_id[i]]["claim_description"]
+
+    valid_indices = set(index_to_claim_id.keys())
+    counts = _decision_counts(decision, show_merge=True)
+    header = (f"=== Proposed selection for {group_label}: {counts['kept']} kept + "
+              f"{counts['merged_claims']} merged ({counts['merge_groups']} group(s)) "
+              f"= {counts['total']} total ===")
+    body = _render_decision_sections(decision, valid_indices, name_fn, show_merge=True)
+    return header + "\n" + body
+
+
+def _log_decision(log_path, rendered_block):
+    """Appends ONLY the final, human-confirmed KEEP/MERGE/DROP block (its own
+    header line already names the group) to log_path -- no intermediate
+    attempts, no debug noise. log_path is caller-supplied (not hardcoded), so
+    where the log lives is entirely up to whoever calls narrow_position_group
+    / narrow_all_claims."""
+    if not log_path:
+        return
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(rendered_block + "\n\n")
+
+
+def _propose_confirm_and_recap(build_system_prompt, valid_indices, fallback_ids, render_fn,
+                                cap, count_fn, over_cap_label, log_path):
+    """Shared retry loop for BOTH claim-level (narrow_position_group) and
+    project-level (select_top_projects) group decisions: propose (LLM,
+    2-attempt retry inside _propose_decision_with_retry) -> human confirm via
+    confirm_decision -> if the confirmed result still exceeds `cap` (as
+    measured by count_fn), loop back with a steering note describing the
+    overage and try again; otherwise log the final decision (render_fn also
+    doubles as the log renderer, since it already produces the full
+    '=== ... ===' header + body) and return it. A human 'skip all' during
+    confirm is treated as an empty GroupDecision, which always satisfies the
+    cap. build_system_prompt(steering_note) lets each caller supply its own
+    template/context (avoid_note, max_claims vs max_projects, etc.)."""
+    steering_note = None
+    while True:
+        system_prompt = build_system_prompt(steering_note)
+        decision = _propose_decision_with_retry(
+            system_prompt, valid_indices,
+            user_prompt="Provide your decision now, following the output format exactly.",
+            temperature=0.0 if not steering_note else 0.3,
+            fallback_ids=fallback_ids,
+        )
+        draft = _serialize_decision_as_text(decision, valid_indices)
+        final_decision = confirm_decision(draft, system_prompt, valid_indices, render_fn=render_fn)
+        if final_decision is None:
+            final_decision = GroupDecision(keep=[], merge_groups=[], labels={})
+
+        count = count_fn(final_decision)
+        if count <= cap:
+            _log_decision(log_path, render_fn(final_decision))
+            return final_decision
+
+        print(f"  [Notice] {count} {over_cap_label}, over the {cap} cap -- "
+              "returning to the LLM's first-pass output to re-select.")
+        steering_note = f"Previous round kept {count} {over_cap_label}, over the {cap} cap -- select fewer."
+
+
+def narrow_position_group(candidate_ids, contexts, job_description, group_key, group_label,
+                           track="work", max_claims=MAX_CLAIMS_PER_POSITION, avoid_note=None,
+                           log_path=None):
+    records_block, index_to_claim_id = _build_records_block_and_index(candidate_ids, contexts)
+    if not index_to_claim_id:
+        return []
+    valid_indices = set(index_to_claim_id.keys())
+
+    def build_system_prompt(steering_note):
+        context_block = _build_context_block(avoid_note, steering_note)
+        return _build_group_system_prompt(
+            job_description, records_block, len(valid_indices), max_claims, context_block
+        )
+
+    def render_fn(d):
+        return _render_group_decision(d, contexts, index_to_claim_id, group_label)
+
+    # Cap counts final rendered bullets, not raw claims -- a merge group
+    # collapses to ONE bullet regardless of how many claims feed into it.
+    final_decision = _propose_confirm_and_recap(
+        build_system_prompt, valid_indices, fallback_ids=list(valid_indices)[:max_claims],
+        render_fn=render_fn, cap=max_claims,
+        count_fn=lambda d: _decision_counts(d, show_merge=True)["total"],
+        over_cap_label="bullet(s)", log_path=log_path,
+    )
+    return _decision_to_items(final_decision, index_to_claim_id, group_key, group_label, track)
+
+
+def _group_ctxs_by_key(ctxs, key_field, label_field):
+    """Groups context dicts by key_field (e.g. 'display_id' or 'project_id'),
+    preserving first-seen order. A missing key gets its own singleton group
+    (mirrors the old __no_project__ fallback) rather than being silently
+    merged with other missing-key records."""
+    groups = {}
+    order = []
+    for ctx in ctxs:
+        key = ctx.get(key_field)
+        if key is None:
+            key = f"__no_{key_field}__{ctx['claim_id']}"
+        if key not in groups:
+            groups[key] = {"label": ctx.get(label_field), "claim_ids": []}
+            order.append(key)
+        groups[key]["claim_ids"].append(ctx["claim_id"])
+    return [(key, groups[key]["label"], groups[key]["claim_ids"]) for key in order]
+
+
+def narrow_work_track_claims(work_ctxs, contexts, job_description, log_path=None):
+    """Stage 2: work-track claims grouped by position (display_id)."""
+    items = []
+    for display_id, display_name, claim_ids in _group_ctxs_by_key(work_ctxs, "display_id", "display_name"):
+        items.extend(narrow_position_group(
+            claim_ids, contexts, job_description,
+            group_key=display_id, group_label=display_name, track="work",
+            max_claims=MAX_CLAIMS_PER_POSITION, log_path=log_path,
+        ))
+    return items
+
+
+MAX_PROJECTS_IN_SECTION = 3
+
+PROJECT_SELECT_SYSTEM_PROMPT = """You are a resume content curator selecting which PROJECTS \
+belong in the "Projects" section of a resume, given a job description. Each candidate below is \
+ONE project, shown by its project context plus its raw candidate claims -- none of these claims \
+have been narrowed down yet, so judge each project as a WHOLE by how well its project context \
+matches the job description, not by cherry-picking one impressive claim. Select AT MOST \
+{max_projects} project(s), ranking the ones whose project context is the closest fit to the JD \
+first. Never merge projects with each other -- claim-level narrowing within each selected \
+project happens in a later step, not here.
+
+{context_block}
+
+Your output must be exactly this shape, nothing else. Within a line, separate "index:label" \
+pairs with A SEMICOLON (";"), NEVER a comma. Every label must be AT MOST 3 WORDS and contain NO \
+symbols or punctuation (letters and single spaces only).
+Line 1: KEEP <semicolon-separated "index:label" pairs, or NONE> -- AT MOST {max_projects} \
+entries; label is a short reason this project was selected (e.g. "Strong JD Fit").
+Final line: DROP <semicolon-separated "index:label" pairs, or NONE> -- label is a short reason \
+(e.g. "Weaker JD Fit", "Redundant Coverage").
+Every project number shown to you must appear in EXACTLY ONE of KEEP or DROP. Never invent a \
+project number that wasn't shown to you, and never invent facts not present in the records."""
+
+
+def _build_project_candidate_block(project_entries, contexts):
+    """project_entries: list of (project_id, project_name, claim_ids) -- RAW,
+    pre-narrowing. Shows each project's project_context (the primary signal
+    for this selection) plus its raw candidate claims for extra context."""
+    index_to_project = {}
+    lines = []
+    for i, (project_id, project_name, claim_ids) in enumerate(project_entries, 1):
+        index_to_project[i] = project_id
+        sample_ctx = contexts.get(claim_ids[0], {}) if claim_ids else {}
+        project_context = sample_ctx.get("project_context") or "(not provided)"
+        claim_lines = [f"    - {contexts[cid]['claim_description']}" for cid in claim_ids if cid in contexts]
+        lines.append(
+            f"[{i}] Project: {project_name}\n"
+            f"    Project context: {project_context}\n"
+            + "\n".join(claim_lines)
+        )
+    return "\n\n".join(lines), index_to_project
+
+
+def _render_project_decision(decision, project_entries, max_projects):
+    def name_fn(i):
+        return project_entries[i - 1][1]
+
+    valid_indices = set(range(1, len(project_entries) + 1))
+    counts = _decision_counts(decision, show_merge=False)
+    dropped = len(valid_indices) - counts["kept"]
+    header = (f"=== Proposed project selection: {counts['kept']} kept / {dropped} dropped "
+              f"(max {max_projects}) ===")
+    body = _render_decision_sections(decision, valid_indices, name_fn, show_merge=False)
+    return header + "\n" + body
+
+
+def select_top_projects(project_entries, contexts, job_description,
+                         max_projects=MAX_PROJECTS_IN_SECTION, log_path=None):
+    """project_entries: list of (project_id, project_name, claim_ids) -- RAW,
+    BEFORE any claim-level narrowing. If there are more projects than
+    max_projects, the LLM proposes which whole project(s) to keep, ranked by
+    how well each project's project_context matches the JD (same KEEP/DROP
+    grammar as claim-level narrowing, no MERGE -- projects aren't merged),
+    with a 2-attempt retry before falling back, then a human confirms via the
+    same confirm_decision gate. Returns the selected SUBSET of project_entries
+    (same shape) -- claim-level narrowing happens afterward, only for the
+    projects that survive this cut."""
+    if not project_entries:
+        return []
+    if len(project_entries) <= max_projects:
+        return project_entries
+
+    records_block, index_to_project = _build_project_candidate_block(project_entries, contexts)
+    valid_indices = set(index_to_project.keys())
+
+    def build_system_prompt(steering_note):
+        context_block = _build_context_block(avoid_note=None, steering_note=steering_note)
+        return (
+            PROJECT_SELECT_SYSTEM_PROMPT.format(max_projects=max_projects, context_block=context_block)
+            + f"\n\nJob description:\n{job_description}\n\n"
+            + f"{len(project_entries)} candidate project(s):\n\n{records_block}"
+        )
+
+    def render_fn(d):
+        return _render_project_decision(d, project_entries, max_projects)
+
+    final_decision = _propose_confirm_and_recap(
+        build_system_prompt, valid_indices, fallback_ids=list(valid_indices)[:max_projects],
+        render_fn=render_fn, cap=max_projects,
+        count_fn=lambda d: _decision_counts(d, show_merge=False)["total"],
+        over_cap_label="project(s)", log_path=log_path,
+    )
+    return [project_entries[i - 1] for i in sorted(final_decision.keep)]
+
+
+def narrow_degree_track_claims(academic_ctxs, contexts, job_description, avoid_note, log_path=None):
+    """Stage 3: degree/project-section. Selection happens FIRST -- which
+    projects make the cut (MAX_PROJECTS_IN_SECTION), ranked by how well each
+    project's project_context matches the JD, via select_top_projects -- and
+    only the SELECTED projects then go through per-project claim-level MECE
+    narrowing (MAX_CLAIMS_PER_PROJECT), with Stage 2's avoid_note applied at
+    that point."""
+    project_entries = _group_ctxs_by_key(academic_ctxs, "project_id", "project_name")
+    selected_projects = select_top_projects(
+        project_entries, contexts, job_description,
+        max_projects=MAX_PROJECTS_IN_SECTION, log_path=log_path,
+    )
+
+    items = []
+    for project_id, project_name, claim_ids in selected_projects:
+        items.extend(narrow_position_group(
+            claim_ids, contexts, job_description,
+            group_key=project_id, group_label=project_name, track="degree",
+            max_claims=MAX_CLAIMS_PER_PROJECT, avoid_note=avoid_note, log_path=log_path,
+        ))
+    return items
+
+
+def narrow_all_claims(selected, job_description, log_path=None):
+    """Full Stage 2 + Stage 3 pipeline: work-track first (sequencing enforces
+    track priority, not a shared budget), then degree-track with an
+    avoid_note built from work-track's finalized result. log_path, if given,
+    receives one appended block per group with ONLY the final confirmed
+    KEEP/MERGE/DROP decision -- no intermediate attempts.
+
+    Returns (items, contexts) -- contexts is the same claim_id -> full-row
+    dict built here from `selected` (which claim_selector.py already
+    populated with every field downstream stages need, including
+    notes_for_llm/org_name/project_context/etc.). Callers such as
+    experience_rewriter.rewrite_and_confirm() should reuse this SAME
+    contexts dict instead of re-querying the DB -- claim_selector.py already
+    did the one-and-only DB round trip for this whole pipeline."""
+    contexts = {ctx["claim_id"]: ctx for ctx in selected["work_track"] + selected["academic_track"]}
+
+    work_items = narrow_work_track_claims(selected["work_track"], contexts, job_description, log_path=log_path)
+    avoid_note = build_avoid_note(work_items, contexts)
+    degree_items = narrow_degree_track_claims(
+        selected["academic_track"], contexts, job_description, avoid_note, log_path=log_path
+    )
+
+    return work_items + degree_items, contexts

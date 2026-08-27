@@ -1,49 +1,5 @@
 """
-resume_builder.py
-Version: v17 (2026-08-19)
-
-Changelog:
-- v17 (2026-08-19): Per user request (2026-08-19):
-  1. build_resume_yaml() renamed to build_cv_yaml() (name only, no
-     signature/behavior change).
-  2. render_pdf() no longer reads settings.yaml to determine the PDF
-     output path -- that logic is fully removed. `--settings` is still
-     passed to the rendercv CLI as before (settings.yaml may still hold
-     other rendercv_settings the user cares about, e.g. bold_keywords),
-     but the PDF destination is now ALWAYS computed in Python and passed
-     via `--pdf-path`, never read back out of the YAML file.
-  3. render_pdf()'s pdf_path parameter is now REQUIRED (previously
-     optional) -- there is no more "fall back to settings.yaml's
-     pdf_path" behavior, so a caller-supplied path is mandatory.
-  4. build_default_output_path() replaced by build_cv_pdf_path(), which
-     implements the new required naming scheme:
-     - folder: {OUTPUT_DIR}/{job_title}_{company_name}/
-     - filename: cv_{name}_{job_title}_{company_name}.pdf
-     - full path: {OUTPUT_DIR}/{job_title}_{company_name}/cv_{name}_{job_title}_{company_name}.pdf
-     OUTPUT_DIR comes from core.config.get_cv_config() (reads OUTPUT_DIR
-     from .env). The folder is created via pdf_path.parent.mkdir(...) at
-     render_pdf() call time if it doesn't exist yet -- build_cv_pdf_path()
-     itself only computes the path, it doesn't touch the filesystem.
-- v16 (2026-08-19): Renamed render_pdf()'s pdf_output_path parameter to
-  pdf_path, and switched to core.config.get_cv_config() (renamed from
-  get_apply_config() in config.py v3).
-- v15 (2026-08-19): render_pdf() gained an optional pdf_output_path
-  parameter, passed to `rendercv render` via the `--pdf-path` CLI flag.
-- v14 (2026-08-16): build_skills_section() now filters to
-  tag_category == "skill" ONLY before calling skill_grouper.
-  group_skills_for_jd().
-- v13 (2026-08-16): build_skills_section()/build_resume_yaml() gained a
-  required job_description parameter, threading through to
-  gencv/skill_grouper.py.
-- v12 (2026-08-16) -- QA fixes: sections["projects"] only written when
-  non-empty; build_education_entries() signature simplified.
-- v11 (2026-08-16): Reverted build_education_entries()'s sort key.
-- v10 (2026-08-16): Added build_project_entries().
-- v9 (2026-08-15): summary moved into sections dict as a TextEntry.
-- v1 (2026-08-10, inferred): Initial resume YAML assembly + rendercv CLI call.
-
-把選定的經歷 + 身份 + 連結 + 教育 + 專案 + 摘要 + JD-specific skills 從資料庫組裝成
-履歷內容 YAML，交給 rendercv 官方套件排版編譯成最終 PDF。
+gencv/resume_builder.py
 """
 
 import pathlib
@@ -54,7 +10,10 @@ from collections import defaultdict
 import yaml
 
 from core.config import get_cv_config
-from core.db import get_session, MetricORM, ClaimTagORM, TagORM, ClaimORM, ActionORM, ProblemORM, ProjectORM, CompanyORM, SchoolORM
+from core.db import (
+    get_session, 
+    MetricORM, ClaimTagORM, TagORM, ClaimORM, ActionORM, ProblemORM, ProjectORM, CompanyORM, SchoolORM, PositionORM
+)
 from gencv.experience_matcher import fetch_experience_contexts, to_uuid_list
 from gencv.skill_grouper import group_skills_for_jd
 from gencv.identity_selector import select_identity_from_jd, select_networks_from_jd
@@ -79,7 +38,13 @@ def build_network_entries(job_description):
 
 def build_experience_entries(session, claim_ids, description_overrides=None):
     """依 claim_id 清單取得完整背景，篩出 WORK TRACK（is_work_track=True）子集，
-    依組織+職稱分組，組成 rendercv ExperienceEntry 清單。"""
+    依組織+職稱分組，組成 rendercv ExperienceEntry 清單。
+
+    (vNEXT) 沒被任何選中 claim 覆蓋到的 position，改用 summary（一段文字，
+    非 bullet point）呈現 position.responsibility，跟 claim-driven 的
+    position（用 highlights bullet）在視覺上明顯區分：一眼看出哪些是這次
+    投遞重點經歷、哪些只是補時間線完整性的次要經歷。
+    """
     contexts = fetch_experience_contexts(session, claim_ids)
     description_overrides = description_overrides or {}
 
@@ -96,7 +61,6 @@ def build_experience_entries(session, claim_ids, description_overrides=None):
             metrics_by_claim[str(m.claim_id)].append(m)
 
     grouped = defaultdict(list)
-    meta = {}
 
     for claim_id in work_claim_ids:
         ctx = contexts.get(claim_id)
@@ -105,15 +69,45 @@ def build_experience_entries(session, claim_ids, description_overrides=None):
         key = (ctx["org_name"], ctx["title"], ctx["start_date"], ctx["end_date"])
         highlight = description_overrides.get(claim_id, ctx["claim_description"])
         grouped[key].append(highlight)
-        meta[key] = ctx
+
+    claim_backed_keys = set(grouped.keys())
+
+    # 補上沒有任何選中 claim 的 position -- 用 summary 呈現，不是 highlights。
+    fallback_summaries = {}
+    all_positions = session.query(PositionORM).all()
+    for position in all_positions:
+        company_name = (
+            session.query(CompanyORM.company_name)
+            .filter(CompanyORM.company_id == position.company_id)
+            .scalar()
+        )
+        key = (company_name, position.title, position.start_date, position.end_date)
+        if key in claim_backed_keys:
+            continue  # 已經有選中的 claim 覆蓋這個 position
+        if not position.responsibility:
+            continue  # 沒有 responsibility 可用，不硬塞空內容
+        fallback_summaries[key] = position.responsibility
 
     entries = []
+
     for (org_name, title, start_date, end_date), highlights in grouped.items():
         entry = {
             "company": org_name,
             "position": title,
             "location": session.query(CompanyORM.location).filter(CompanyORM.company_name == org_name).scalar(),
             "highlights": highlights,
+        }
+        if start_date:
+            entry["start_date"] = str(start_date)
+            entry["end_date"] = str(end_date) if end_date else "present"
+        entries.append(entry)
+
+    for (org_name, title, start_date, end_date), summary in fallback_summaries.items():
+        entry = {
+            "company": org_name,
+            "position": title,
+            "location": session.query(CompanyORM.location).filter(CompanyORM.company_name == org_name).scalar(),
+            "summary": summary,
         }
         if start_date:
             entry["start_date"] = str(start_date)
@@ -207,14 +201,16 @@ def build_skill_entries(session, claim_ids, job_description):
     依這份 JD 重新分組（上限4組，含未分類 tag 的互動式指派、以及新增分組的
     互動指令），輸出 rendercv OneLineEntry 清單。
     """
-    if not claim_ids:
-        return []
+    # if not claim_ids:
+    #     return []
 
     tag_rows = (
         session.query(TagORM)
         .join(ClaimTagORM, ClaimTagORM.tag_id == TagORM.tag_id)
-        .filter(ClaimTagORM.claim_id.in_(to_uuid_list(claim_ids)))
-        .filter(TagORM.tag_category.in_(["tool", "capability"])) # tyahsin: need some re-thinking
+        # .filter(ClaimTagORM.claim_id.in_(to_uuid_list(claim_ids)))
+        # .filter(TagORM.tag_category.in_(["tool", "capability"]))
+        .join(GovernanceORM, GovernanceORM.claim_id == ClaimTagORM.claim_id)
+        .filter(GovernanceORM.allowed_for_generation == True)
         .all()
     )
 

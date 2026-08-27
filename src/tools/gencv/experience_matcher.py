@@ -35,10 +35,18 @@ relevant even if it comes from an academic or personal project, as long as
 the skill itself is explicitly called for in the job description.
 
 
-Tags are an important relevance signal -- tags represent skills/domains/job
-functions the user has manually confirmed for that record. Even if the
-result text itself has no obvious keyword match, a tag that matches the
-job's requirements should still be treated as relevant.
+Tags are an important relevance signal -- tags represent tools/methods/industries
+the user has manually confirmed for that record. How much weight a tag-only
+match (no supporting mention in the problem/action/result text) carries
+depends on its category:
+- A "tool" tag (a specific named language, framework, library, or platform,
+  e.g. "Python", "Kubernetes") is concrete enough on its own -- a match is
+  sufficient to mark the record relevant even with no text overlap.
+- A "capability" or "context" tag (a broader method or industry/domain term,
+  e.g. "Data Analysis", "Fintech") is more likely to be a coarse, generic
+  label. Treat a match on these as a supporting signal that lowers the bar,
+  not as sufficient on its own -- there should also be at least a
+  plausible, non-contradictory connection in the problem/action/result text.
 
 
 If a record's usage policy (use_policy) explicitly excludes this type of
@@ -258,3 +266,6 @@ def select_claims(job_description: str) -> list[str]:
         index_to_claim_id[i] for i in relevant_indices if i in index_to_claim_id
     ]
     return selected_ids
+
+
+
