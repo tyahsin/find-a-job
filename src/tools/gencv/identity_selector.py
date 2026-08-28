@@ -291,6 +291,7 @@ def _llm_suggest_position(positions: list[str], job_description: str) -> str | N
         temperature=0.0,
         max_tokens=20,
     )
+    print(f"[Notice] Using model: {response.model}")
 
     raw = response.text.strip()
     if not raw or "NONE" in raw.upper():

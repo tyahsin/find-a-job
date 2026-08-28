@@ -19,13 +19,14 @@ with get_session() as session:
 if not selected["work_track"] and not selected["academic_track"]:
     raise SystemExit("No claims selected for this job -- pick a different job to test with.")
 
-final_items, contexts = narrow_all_claims(selected, job_description, log_path="/Users/yahsintsai/Downloads/claim_ranker.log")
+final_items = narrow_all_claims(selected, job_description, log_path="/Users/yahsintsai/Downloads/claim_ranker.log")
 
 if not final_items:
     raise SystemExit("No items survived narrowing -- nothing to rewrite.")
 
-rewritten = rewrite_and_confirm(final_items, contexts, job.job_description)
+rewritten = rewrite_and_confirm(final_items, selected, job.job_description)
 
 print("\n=== Final rewritten bullets ===")
 for item in rewritten:
-    print(f"[{item['track']}] {item['group_label']} ({item['kind']}): {item['description']}")
+    # print(f"[{item['track']}] {item['group_label']} ({item['kind']}): {item['description']}")
+    print(item)

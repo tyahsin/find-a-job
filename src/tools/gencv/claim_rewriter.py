@@ -1,5 +1,5 @@
 """
-experience_rewriter.py
+gencv/claim_rewriter.py
 
 Safety design principles:
 1. Metric numbers are NEVER touched by the LLM here.
@@ -27,6 +27,9 @@ Safety design principles:
    allowed to silently drop a sub-record's content -- if two sub-records
    conflict or overlap entirely, prefer the more specific/complete one
    rather than inventing a synthesis that isn't supported by either.
+8. action.role_scope (led / collaborated / supported), when present, is
+   respected as a hard constraint the same way notes_for_llm is -- the
+   bullet's framing must match it, never inflate or deflate it.
 
 No DB access here (by design): claim_selector.py's single SQL query already
 pulled every field this whole claim-progression pipeline needs -- including
@@ -64,45 +67,53 @@ Strict rules (must follow):
 2. Do not change the direction or strength of any claim -- if the source
    says "supported", do not upgrade it to "led"; if a result is described
    modestly, do not amplify it.
-3. LENGTH: keep each bullet to approximately 20-25 words -- roughly one
+3. ROLE SCOPE: when a record gives a "Role scope" (led / collaborated /
+   supported), the bullet's verb and framing must match it exactly -- a
+   "supported" record must never read as if the candidate led or drove it
+   independently, and a "led" record must never be softened into passive
+   team language. This is a hard constraint, not a stylistic suggestion,
+   and applies per sub-record in a merge (do not let one sub-record's
+   stronger role scope bleed into how another sub-record's contribution is
+   described).
+4. LENGTH: keep each bullet to approximately 20-25 words -- roughly one
    to two lines at typical resume column width. This is a WORD-COUNT
    guideline based on rendered line length, NOT a sentence-count or
    period-count rule. Cut adjectives, process detail, and any
    information that doesn't help a reader judge WHAT was done and HOW
    WELL, before cutting anything that affects the actual claim.
-4. STRUCTURE: start the bullet with a strong action verb (e.g.
+5. STRUCTURE: start the bullet with a strong action verb (e.g.
    "Redesigned...", "Implemented...", "Streamlined..."), not a passive
    construction and not a Situation/Problem clause. Action and Result
    are the primary content of the bullet.
-5. The Situation/Problem context is OMITTED by default. Only include it
+6. The Situation/Problem context is OMITTED by default. Only include it
    when the problem itself signals meaningful scope, scale, or difficulty
    that a reader would otherwise miss. When included, keep it to a short
    clause at the START of the bullet -- never at the end.
-6. CAPABILITY DIVERSITY WITHIN A GROUP: when a group contains MORE THAN
+7. CAPABILITY DIVERSITY WITHIN A GROUP: when a group contains MORE THAN
    ONE record, make sure each bullet foregrounds a DIFFERENT capability,
    consistent with each record's own "Capability angle" label when given.
    Never invent or exaggerate a distinction the source material doesn't
    support; if two records in a group are genuinely about the same
    capability despite different labels, do not force artificial variation.
-7. MERGE RECORDS: when a record merges 2+ sub-records, combine their
+8. MERGE RECORDS: when a record merges 2+ sub-records, combine their
    complementary details into ONE sentence -- never repeat the same fact
    twice, never produce more than one sentence, and never drop a
    sub-record's content just because it didn't fit; prefer trimming
    phrasing over dropping a distinct fact.
-8. You may tailor WORD CHOICE to better match the job description's
+9. You may tailor WORD CHOICE to better match the job description's
    terminology and emphasis -- but you may not restructure the sentence's
    subject/responsibility or introduce claims the source material
    doesn't support.
-9. Do NOT touch, reformat, or remove any metric/number mentioned in any
-   Result field.
-10. You must obey any per-record operating notes given (notes_for_llm) as
+10. Do NOT touch, reformat, or remove any metric/number mentioned in any
+    Result field.
+11. You must obey any per-record operating notes given (notes_for_llm) as
     a hard constraint on top of the rules above -- when a merge record has
     multiple operating notes, obey all of them.
-11. Concise, resume-appropriate register -- no filler words, no
+12. Concise, resume-appropriate register -- no filler words, no
     first-person pronouns.
-12. If a source field is empty or not provided, write the sentence using
+13. If a source field is empty or not provided, write the sentence using
     only the fields that ARE provided.
-13. Output must be in English, regardless of the input language.
+14. Output must be in English, regardless of the input language.
 
 Output format: one fused, JD-tailored bullet sentence per RECORD (not per
 sub-record), in the same order as given, separated by the delimiter "|||"
@@ -126,22 +137,26 @@ force:
 1. Do not add any concrete fact, number, scope, or degree of achievement
    that is not already present in the record's own source field(s).
 2. Do not change the direction or strength of any claim.
-3. If this record merges 2+ sub-records, keep fusing all of them into ONE
+3. ROLE SCOPE: when a record gives a "Role scope" (led / collaborated /
+   supported), the bullet's verb and framing must match it exactly, per
+   sub-record if this record is a merge -- this is a hard constraint, not
+   a stylistic suggestion.
+4. If this record merges 2+ sub-records, keep fusing all of them into ONE
    sentence -- never revert to one sentence per sub-record, never drop a
    sub-record's content.
-4. The user's steering note may ONLY request a different PRESENTATION of
+5. The user's steering note may ONLY request a different PRESENTATION of
    the same underlying facts -- tone, length, emphasis, word choice,
    which capability angle to foreground. It may NOT be used to introduce
    a new fact, number, or degree of achievement beyond the source
    material, even if the steering note seems to ask for that -- if the
-   note conflicts with rules 1/2/3, follow rules 1/2/3 instead.
-5. LENGTH: keep the bullet to approximately 20-25 words, one fluent
+   note conflicts with rules 1/2/3/4, follow rules 1/2/3/4 instead.
+6. LENGTH: keep the bullet to approximately 20-25 words, one fluent
    sentence, starting with a strong action verb.
-6. Do NOT touch, reformat, or remove any metric/number mentioned in any
+7. Do NOT touch, reformat, or remove any metric/number mentioned in any
    Result field.
-7. You must obey any operating notes given (notes_for_llm) as a hard
+8. You must obey any operating notes given (notes_for_llm) as a hard
    constraint on top of the rules above.
-8. Output must be in English, regardless of the input language.
+9. Output must be in English, regardless of the input language.
 
 Output format: output ONLY the single revised bullet sentence, no
 preamble, no explanation, no quotation marks."""
@@ -203,10 +218,17 @@ def _build_item_source_block(item, contexts):
     def _fields(cid):
         ctx = contexts[cid]
         notes_for_llm = ctx.get("notes_for_llm") or "none"
+        role_scope = ctx.get("role_scope")
+        role_line = (
+            f"    Role scope: {role_scope} (hard constraint -- do not describe this "
+            f"as more or less independent than stated, see rule 3)\n"
+            if role_scope else ""
+        )
         return (
             f"    Background: {ctx.get('project_context') or '(not provided)'}\n"
             f"    Problem: {ctx.get('problem_description') or '(not provided)'}\n"
             f"    Action: {ctx.get('action_description') or '(not provided)'}\n"
+            f"{role_line}"
             f"    Result: {ctx.get('claim_description') or '(not provided)'}\n"
             f"    Operating notes: {notes_for_llm}"
         )
@@ -336,7 +358,7 @@ def _confirm_item(item, contexts, job_description, index, total, drafted):
     current_draft = drafted
 
     while True:
-        print(f"{current_draft}")
+        print(f"  Fused & JD-tailored bullet: {current_draft}")
 
         if original.strip() == current_draft.strip():
             print("  (Fused result is identical to the original -- using as-is)")

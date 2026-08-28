@@ -46,10 +46,7 @@ class DBConfig:
 
 @dataclass(frozen=True)
 class LLMConfig:
-    api_key: str
-    model: str
-    provider_env_var: str
-
+    models: list[str]
 
 @dataclass(frozen=True)
 class CvConfig:
@@ -58,10 +55,12 @@ class CvConfig:
 
 _PROVIDER_ENV_VAR_MAP = {
     "claude": "ANTHROPIC_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
     "gpt": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
+    "groq": "GROQ_API_KEY",
 }
-_DEFAULT_PROVIDER_ENV_VAR = "OPENAI_API_KEY"
+_DEFAULT_PROVIDER_ENV_VAR = "ANTHROPIC_API_KEY"
 
 
 def _infer_provider_env_var(model: str) -> str:
@@ -83,11 +82,23 @@ def get_db_config() -> DBConfig:
 
 
 def get_llm_config() -> LLMConfig:
-    model = os.getenv("LLM_MODEL", "claude-sonnet-4-5")
-    api_key = _require("LLM_API_KEY")
-    provider_env_var = _infer_provider_env_var(model)
-    os.environ.setdefault(provider_env_var, api_key)
-    return LLMConfig(api_key=api_key, model=model, provider_env_var=provider_env_var)
+    models = os.getenv("LLM_MODELS")
+    models = [m for m in models.split(",")]
+    if not models:
+        raise ValueError("LLM_MODELS is empty after parsing.")
+
+    missing = []
+    for model in models:
+        env_var = _infer_provider_env_var(model)
+        if not os.getenv(env_var):
+            missing.append(f"{model} -> needs {env_var}")
+    if missing:
+        raise ValueError(
+            "Missing API key(s) for the following configured model(s):\n"
+            + "\n".join(f"  - {m}" for m in missing)
+        )
+
+    return LLMConfig(models=models)
 
 
 def get_cv_config() -> CvConfig:

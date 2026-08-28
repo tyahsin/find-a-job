@@ -28,6 +28,19 @@ fact, not merely a similar-sounding label.
 
 {steering_note_block}
 
+HARD CONSTRAINT (non-negotiable, checked automatically -- violating it wastes this entire turn): \
+the cap of {max_claims} does NOT count raw records, it counts FINAL RENDERED BULLETS:
+    total = (number of records in KEEP) + (number of MERGE lines you write)
+Each MERGE line counts as EXACTLY 1 toward this total, no matter how many records it groups \
+together, because all records on one MERGE line collapse into a single fused bullet later. \
+Records in DROP count as 0.
+You MUST satisfy total <= {max_claims} in THIS response, on your FIRST attempt -- there is no \
+follow-up turn to fix it. Before writing your final KEEP/MERGE/DROP lines, silently count \
+len(KEEP) + <number of MERGE lines>. If that count would exceed {max_claims}, you MUST keep \
+reducing it -- by merging more records together (even if the shared capability is only loosely \
+related) and/or moving more records to DROP -- until it does not, BEFORE you output anything. \
+An output with total > {max_claims} is an invalid response and will be discarded.
+
 Your output must be exactly this shape, nothing else. Within a line, separate "index:label" \
 pairs with A SEMICOLON (";"), NEVER a comma. Every label -- in KEEP, MERGE, or DROP -- must be \
 AT MOST 3 WORDS and contain NO symbols or punctuation at all (no commas, hyphens, slashes, \
@@ -93,7 +106,8 @@ def _build_group_system_prompt(job_description, records_block, count, max_claims
     return (
         RANKER_SYSTEM_PROMPT.format(max_claims=max_claims, steering_note_block=context_block)
         + f"\n\nJob description:\n{job_description}\n\n"
-        + f"{count} candidate record(s) for this group (max {max_claims} may be kept):\n\n{records_block}"
+        + f"{count} candidate record(s) for this group "
+        + f"(cap: len(KEEP) + number_of_MERGE_lines <= {max_claims}):\n\n{records_block}"
     )
 
 
@@ -248,25 +262,64 @@ def _log_decision(log_path, rendered_block):
     / narrow_all_claims."""
     if not log_path:
         return
-    with open(log_path, "a", encoding="utf-8") as f:
+    with open(log_path, "w", encoding="utf-8") as f:
         f.write(rendered_block + "\n\n")
 
 
+def _force_within_cap(decision, cap):
+    """Deterministic, non-LLM last resort: if a decision still has more than
+    `cap` final slots (KEEP entries + MERGE groups, each MERGE group = 1
+    slot), forcibly keep only the FIRST `cap` slots in the order the LLM
+    itself produced them, and demote everything after that to DROP with an
+    honest 'Cap Overflow' label. This guarantees count_fn(...) <= cap with
+    zero additional LLM calls and zero additional human prompts -- it never
+    invents a reason, it only reflects that the slot didn't fit."""
+    slots = [("keep", i) for i in decision.keep] + [("merge", g) for g in decision.merge_groups]
+    if len(slots) <= cap:
+        return decision
+
+    kept_slots, overflow_slots = slots[:cap], slots[cap:]
+    new_keep = [i for kind, i in kept_slots if kind == "keep"]
+    new_merge = [g for kind, g in kept_slots if kind == "merge"]
+
+    new_labels = dict(decision.labels)
+    for kind, item in overflow_slots:
+        for i in ([item] if kind == "keep" else item):
+            new_labels[i] = "Cap Overflow"
+
+    return GroupDecision(keep=new_keep, merge_groups=new_merge, labels=new_labels)
+
+
 def _propose_confirm_and_recap(build_system_prompt, valid_indices, fallback_ids, render_fn,
-                                cap, count_fn, over_cap_label, log_path):
-    """Shared retry loop for BOTH claim-level (narrow_position_group) and
-    project-level (select_top_projects) group decisions: propose (LLM,
-    2-attempt retry inside _propose_decision_with_retry) -> human confirm via
-    confirm_decision -> if the confirmed result still exceeds `cap` (as
-    measured by count_fn), loop back with a steering note describing the
-    overage and try again; otherwise log the final decision (render_fn also
-    doubles as the log renderer, since it already produces the full
-    '=== ... ===' header + body) and return it. A human 'skip all' during
-    confirm is treated as an empty GroupDecision, which always satisfies the
-    cap. build_system_prompt(steering_note) lets each caller supply its own
-    template/context (avoid_note, max_claims vs max_projects, etc.)."""
+                                cap, count_fn, over_cap_label, log_path, max_silent_retries=2):
+    """Shared flow for BOTH claim-level (narrow_position_group) and
+    project-level (select_top_projects) group decisions.
+
+    Cap enforcement now happens BEFORE the human ever sees a draft, and
+    fully silently (no extra human confirmation round per retry):
+      1. Propose (LLM, with _propose_decision_with_retry's own 2-attempt
+         parse-retry) -> if over cap, retry up to `max_silent_retries` more
+         times with a steering note, with NO human involvement in between.
+      2. If still over cap after those silent retries, deterministically
+         force it within cap via _force_within_cap -- guaranteed, no LLM
+         call, no human prompt.
+      3. Only NOW is the (already-within-cap) proposal shown to the human
+         via confirm_decision for a SINGLE confirmation. If the human uses
+         'r' to regenerate inside confirm_decision and the regenerated
+         result is somehow over cap again (confirm_decision only validates
+         grammar, not our cap), the same deterministic trim is applied
+         again rather than bouncing back into another full LLM round.
+    Net effect: the human is asked to confirm at most once per group, and
+    the decision they see is ALWAYS already <= cap -- there is no longer a
+    visible "over cap, redoing the whole thing, please confirm again" loop.
+    A human 'skip all' during confirm is treated as an empty GroupDecision,
+    which always satisfies the cap. build_system_prompt(steering_note) lets
+    each caller supply its own template/context (avoid_note, max_claims vs
+    max_projects, etc.)."""
     steering_note = None
-    while True:
+    decision = None
+    system_prompt = None
+    for attempt in range(max_silent_retries + 1):
         system_prompt = build_system_prompt(steering_note)
         decision = _propose_decision_with_retry(
             system_prompt, valid_indices,
@@ -274,19 +327,42 @@ def _propose_confirm_and_recap(build_system_prompt, valid_indices, fallback_ids,
             temperature=0.0 if not steering_note else 0.3,
             fallback_ids=fallback_ids,
         )
-        draft = _serialize_decision_as_text(decision, valid_indices)
-        final_decision = confirm_decision(draft, system_prompt, valid_indices, render_fn=render_fn)
-        if final_decision is None:
-            final_decision = GroupDecision(keep=[], merge_groups=[], labels={})
-
-        count = count_fn(final_decision)
+        count = count_fn(decision)
         if count <= cap:
-            _log_decision(log_path, render_fn(final_decision))
-            return final_decision
-
-        print(f"  [Notice] {count} {over_cap_label}, over the {cap} cap -- "
-              "returning to the LLM's first-pass output to re-select.")
+            break
+        if attempt < max_silent_retries:
+            print(f"  [Notice] LLM proposal had {count} {over_cap_label}, over the {cap} cap -- "
+                  f"silently re-prompting the LLM (retry {attempt + 1}/{max_silent_retries}, "
+                  "no confirmation needed from you)...")
         steering_note = f"Previous round kept {count} {over_cap_label}, over the {cap} cap -- select fewer."
+
+    count = count_fn(decision)
+    if count > cap:
+        print(f"  [Notice] Still {count} {over_cap_label} after {max_silent_retries} silent "
+              f"retries -- deterministically trimming to the first {cap} in the LLM's own order "
+              "(no further LLM calls, no extra confirmation).")
+        decision = _force_within_cap(decision, cap)
+
+    # The human now confirms exactly once, over a proposal that ALREADY
+    # satisfies the cap.
+    draft = _serialize_decision_as_text(decision, valid_indices)
+    final_decision = confirm_decision(draft, system_prompt, valid_indices, render_fn=render_fn)
+    if final_decision is None:
+        final_decision = GroupDecision(keep=[], merge_groups=[], labels={})
+
+    count = count_fn(final_decision)
+    if count > cap:
+        # Only reachable if the human used 'r' inside confirm_decision and
+        # accepted a regenerated draft that happens to be over cap again
+        # (confirm_decision itself only checks KEEP/MERGE/DROP grammar, not
+        # this cap). Trim deterministically instead of looping the human
+        # back into another full proposal round.
+        print(f"  [Notice] Confirmed decision still {count} {over_cap_label}, over the {cap} "
+              "cap -- deterministically trimming (no further loop).")
+        final_decision = _force_within_cap(final_decision, cap)
+
+    _log_decision(log_path, render_fn(final_decision))
+    return final_decision
 
 
 def narrow_position_group(candidate_ids, contexts, job_description, group_key, group_label,
@@ -359,6 +435,15 @@ first. Never merge projects with each other -- claim-level narrowing within each
 project happens in a later step, not here.
 
 {context_block}
+
+HARD CONSTRAINT (non-negotiable): there is no MERGE at this stage, every project goes into \
+either KEEP or DROP, so:
+    total = (number of projects in KEEP)
+You MUST satisfy total <= {max_projects} on your FIRST attempt -- there is no follow-up turn to \
+fix it. Before writing your final KEEP/DROP lines, silently count the KEEP entries; if it would \
+exceed {max_projects}, move the weakest-fit project(s) to DROP until it does not, BEFORE you \
+output anything. An output with total > {max_projects} is an invalid response and will be \
+discarded.
 
 Your output must be exactly this shape, nothing else. Within a line, separate "index:label" \
 pairs with A SEMICOLON (";"), NEVER a comma. Every label must be AT MOST 3 WORDS and contain NO \

@@ -2,18 +2,20 @@
 gencv/resume_builder.py
 """
 
+from collections import defaultdict
 import pathlib
 import subprocess
 import sys
-from collections import defaultdict
-
 import yaml
 
 from core.config import get_cv_config
 from core.db import (
     get_session, 
-    MetricORM, ClaimTagORM, TagORM, ClaimORM, ActionORM, ProblemORM, ProjectORM, CompanyORM, SchoolORM, PositionORM
+    MetricORM, ClaimTagORM, TagORM, ClaimORM, ActionORM, ProblemORM, ProjectORM, CompanyORM, SchoolORM, PositionORM, JobORM
 )
+from gencv.claim_selector import select_claims
+from gencv.claim_ranker import narrow_all_claims
+from gencv.claim_rewriter import rewrite_and_confirm
 from gencv.experience_matcher import fetch_experience_contexts, to_uuid_list
 from gencv.skill_grouper import group_skills_for_jd
 from gencv.identity_selector import select_identity_from_jd, select_networks_from_jd
@@ -37,14 +39,6 @@ def build_network_entries(job_description):
     ]
 
 def build_experience_entries(session, claim_ids, description_overrides=None):
-    """依 claim_id 清單取得完整背景，篩出 WORK TRACK（is_work_track=True）子集，
-    依組織+職稱分組，組成 rendercv ExperienceEntry 清單。
-
-    (vNEXT) 沒被任何選中 claim 覆蓋到的 position，改用 summary（一段文字，
-    非 bullet point）呈現 position.responsibility，跟 claim-driven 的
-    position（用 highlights bullet）在視覺上明顯區分：一眼看出哪些是這次
-    投遞重點經歷、哪些只是補時間線完整性的次要經歷。
-    """
     contexts = fetch_experience_contexts(session, claim_ids)
     description_overrides = description_overrides or {}
 
@@ -251,19 +245,6 @@ def build_summary_entry(experience_entries, project_entries, education_entries, 
     return write_summary(job_description, bullets, education_entries)
 
 def build_cv_pdf_path(name: str, job_title: str, company_name: str) -> pathlib.Path:
-    """(v17, replaces build_default_output_path) 依規則組出完整 PDF 輸出路徑：
-
-    - OUTPUT_DIR 來自 core.config.get_cv_config()（讀 .env 的 OUTPUT_DIR，
-      未設定則預設 ~/gencv_applications）。
-    - folder: {OUTPUT_DIR}/{job_title}_{company_name}/
-    - filename: cv_{name}_{job_title}_{company_name}.pdf
-    - 回傳完整路徑: {OUTPUT_DIR}/{job_title}_{company_name}/cv_{name}_{job_title}_{company_name}.pdf
-
-    這個函式只計算路徑字串，不建立資料夾 -- 資料夾的建立交給
-    render_pdf()（呼叫時才 mkdir，若已存在則不動作）。
-    name/job_title/company_name 皆做輕量清洗（去頭尾空白、空白轉底線），
-    不是完整的 slug 函式，其他特殊字元不會被處理。
-    """
     cv_config = get_cv_config()
 
     def _clean(value: str, fallback: str) -> str:
@@ -275,112 +256,27 @@ def build_cv_pdf_path(name: str, job_title: str, company_name: str) -> pathlib.P
 
     folder = cv_config.output_dir / f"{safe_job_title}_{safe_company}"
     filename = f"cv_{safe_name}_{safe_job_title}_{safe_company}.pdf"
-    return folder / filename
-
-
-def build_cv_yaml(
-    company_name,
-    job_title,
-    job_description,
-    claim_ids,
-    output_path,
-    designated_name=None,
-    headline=None,
-    description_overrides=None,
-):
-    """(v17, renamed from build_resume_yaml) 組出 rendercv 看得懂的 cv YAML
-    （只含 cv: 區塊），寫入 output_path。
-
-    job_description 為必填參數 -- build_skills_section() 需要它來做
-    JD-specific 的 skill 分組（僅 tag_category == "skill" 的 tag）。
-
-    summary 為選填的履歷開場摘要，寫進 sections["summary"]（單元素字串 list，
-    RenderCV 的 TextEntry 寫法）。None 代表使用者選擇省略。
-    """
-
-    name, email, phone, location, visa_status = build_identity_entry(job_description, designated_name)
-    networks_entries = build_network_entries(job_description)
-    with get_session() as session:
-        experience_entries = build_experience_entries(session, claim_ids, description_overrides)
-        project_entries = build_project_entries(session, claim_ids, description_overrides)
-        relevant_degrees = select_relevant_degrees(session, claim_ids, job_description)
-        education_entries = build_education_entries(session, relevant_degrees)
-        # skills_entries = build_skill_entries(session, claim_ids, job_description)
-    summary_entry = build_summary_entry(experience_entries, project_entries, education_entries, job_description)
-
-    cv_block = {
-        "name": name,
-        "headline": f"{headline}" if visa_status is None else f"{headline} ({visa_status})",
-        "email": email,
-        "phone": phone,
-        "location": location,
-    }
-    if networks_entries:
-        cv_block["social_networks"] = networks_entries
-
-    sections = {}
-    sections["summary"] = [summary_entry]
-    # sections["skills"] = skills_entries
-    sections["experience"] = experience_entries
-    sections["education"] = education_entries
-    if project_entries:
-        sections["projects"] = project_entries
-
-    cv_block["sections"] = sections
-
-    cv_content = {"cv": cv_block}
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cv_content, f, allow_unicode=True, sort_keys=False)
-
-    print(
-        f"Generated {output_path} with {len(experience_entries)} experience entries, "
-        f"{len(project_entries)} project entries, and {len(education_entries)} education entries."
-    )
-
-    return build_cv_pdf_path(name, job_title, company_name)
+    return pathlib.Path(folder / filename)
 
 
 def render_pdf(
-    cv_yaml_path: pathlib.Path,
     pdf_path: pathlib.Path,
+    cv_yaml_path: pathlib.Path | None = None,
     design_path: pathlib.Path | None = None,
     locale_path: pathlib.Path | None = None,
     settings_path: pathlib.Path | None = None,
 ):
-    """呼叫 `rendercv render` CLI，把 cv YAML 排版編譯成 PDF。
-
-    (v17) pdf_path 現在是必填參數 -- 不再從 settings.yaml 讀取任何
-    pdf_path 值來當備援，PDF 輸出路徑一律由呼叫端算好傳入（通常搭配
-    build_cv_pdf_path()），並透過 `--pdf-path` CLI 參數告訴 rendercv。
-    `--settings` 仍會照常傳給 rendercv CLI -- settings.yaml 裡其他
-    render 設定（非 pdf_path 的部分）不受影響，只是不再從裡面讀值。
-
-    會自動建立 pdf_path 所在資料夾（若不存在）。
-    """
     print(f"[INFO] Using templates from {TEMPLATES_DIR.resolve()}")
+    cv_yaml_path = cv_yaml_path or pdf_path.parent / "cv.yaml"
     design_path = design_path or TEMPLATES_DIR / "design.yaml"
     locale_path = locale_path or TEMPLATES_DIR / "locale.yaml"
     settings_path = settings_path or TEMPLATES_DIR / "settings.yaml"
 
-    pdf_path = pathlib.Path(pdf_path)
-    pdf_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # save .yaml for reference 
-    yaml_data = {}
-    yaml_path = pdf_path.parent / pdf_path.with_suffix(".yaml")
-
     for file in [cv_yaml_path, design_path, locale_path, settings_path]:
         print(file)
         if not file.exists():
-            print(f"[ERROR] 找不到檔案: {f}", file=sys.stderr)
+            print(f"[ERROR] 找不到檔案: {file}", file=sys.stderr)
             sys.exit(1)
-        with open(file, "r", encoding='utf-8') as f:
-            data = yaml.safe_load(f)
-            if data:
-                yaml_data[str(file).split('/')[-1].split('.')[0]] = data
-    with open(yaml_path, "w", encoding='utf-8') as f:
-        yaml.safe_dump(yaml_data, f, default_flow_style=False)
 
     cmd = [
         "rendercv", "render", str(cv_yaml_path),
@@ -405,5 +301,84 @@ def render_pdf(
 
     if result.stdout:
         print(result.stdout)
+
+
+def generate_cv(
+    job: JobORM,
+    designated_name: str | None = None,
+    designated_headline: str | None = None,
+) -> pathlib.Path:
+    
+    # decalre JobORM related variables
+    company_name = job.company_name
+    job_title = job.job_title
+    headline = job_title if designated_headline is None else designated_headline
+    job_description = job.job_description
+
+    # build identity & basic information
+    name, email, phone, location, visa_status = build_identity_entry(job_description, designated_name)
+    pdf_path = build_cv_pdf_path(name, job_title, company_name)
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path = pdf_path.parent / "claim_ranker.log"
+    cv_yaml_path = pdf_path.parent / "cv.yaml"
+
+    # build networks
+    networks_entries = build_network_entries(job_description)
+
+    # select claims
+    selected = select_claims(job_description)
+    if not selected["work_track"] and not selected["academic_track"]:
+        raise ValueError("篩選後沒有任何經歷通過（可能被治理層擋下，或 LLM 判定皆不相關）。")
+
+    # rank claims
+    final_items = narrow_all_claims(selected, job_description, log_path)
+    if not final_items:
+        raise ValueError("MECE narrowing 後沒有任何 item 留下，無法產生履歷內容。")
+
+    # rewrite claims
+    rewritten = rewrite_and_confirm(final_items, selected, job_description)
+
+    # build others
+    # with get_session() as session:
+    #     experience_entries = build_experience_entries(session, claim_ids, description_overrides)
+    #     project_entries = build_project_entries(session, claim_ids, description_overrides)
+    #     relevant_degrees = select_relevant_degrees(session, claim_ids, job_description)
+    #     education_entries = build_education_entries(session, relevant_degrees)
+    #     # skills_entries = build_skill_entries(session, claim_ids, job_description)
+    # summary_entry = build_summary_entry(experience_entries, project_entries, education_entries, job_description)
+
+    # build cv blocks
+    cv_block = {
+        "name": name,
+        "headline": f"{headline}" if visa_status is None else f"{headline} ({visa_status})",
+        "email": email,
+        "phone": phone,
+        "location": location,
+    }
+    if networks_entries:
+        cv_block["social_networks"] = networks_entries
+
+    sections = {}
+    # sections["summary"] = [summary_entry]
+    # # sections["skills"] = skills_entries
+    # sections["experience"] = experience_entries
+    # sections["education"] = education_entries
+    # if project_entries:
+    #     sections["projects"] = project_entries
+
+    cv_block["sections"] = sections
+
+    cv_content = {"cv": cv_block}
+
+    with open(cv_yaml_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cv_content, f, allow_unicode=True, sort_keys=False)
+
+    # print(
+    #     f"Generated {cv_yaml_path} with {len(experience_entries)} experience entries, "
+    #     f"{len(project_entries)} project entries, and {len(education_entries)} education entries."
+    # )
+
+    # render cv
+    render_pdf(pdf_path=pdf_path)
 
     return pdf_path

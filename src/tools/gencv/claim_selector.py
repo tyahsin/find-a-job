@@ -1,18 +1,18 @@
+"""
+gencv/claim_selector.py
+"""
 
 import re
 from sqlalchemy import text
+from core.db import get_session
 from core.llm_client import get_llm_client
 
 SQL_QUERY = """
 SELECT
     degree.degree_id IS NULL AS is_work_track,
     COALESCE(company.company_name, school.school_name) AS org_name,
-    COALESCE(position.department, degree.degree_level) AS org_sub_name,
     COALESCE(position.position_id, degree.degree_id) AS display_id,
     COALESCE(position.title, degree.degree_name) AS display_name,
-    COALESCE(position.start_date, degree.start_date) AS start_date,
-    COALESCE(position.end_date, degree.end_date) AS end_date,
-    COALESCE(position.responsibility, degree.degree_description) AS display_desc,
     project.project_id,
     project.project_name,
     project.project_context,
@@ -85,11 +85,11 @@ def _parse_relevant_indices(raw_response: str) -> set[int]:
         return set()
     return {int(n) for n in re.findall(r"\d+", raw_response)}
 
-def select_claims(session, job_description: str) -> list[str]:
-    
+def select_claims(job_description: str) -> list[str]:
+
     # contexts: all allowed claims with attributes
     rows = (
-        session.execute(
+        get_session().execute(
             text(SQL_QUERY),
         ).mappings().all()
     )
@@ -134,5 +134,3 @@ def select_claims(session, job_description: str) -> list[str]:
             else:
                 selected["academic_track"].append(ctx)
     return selected
-
-
