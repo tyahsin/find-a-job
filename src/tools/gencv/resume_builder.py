@@ -19,6 +19,7 @@ from gencv.claim_ranker import narrow_all_claims
 from gencv.claim_rewriter import rewrite_and_confirm
 # from gencv.network_selector import select_networks_from_jd
 from gencv.orphan_selector import judge_orphan_positions, judge_orphan_degrees
+from gencv.tag_ranker import top_k_tags_by_jd
 from gencv.skill_grouper import group_skills_for_jd
 from gencv.summary_writer import write_summary
 
@@ -125,21 +126,20 @@ def _match_tags(project_ids, tag_category):
         )
 
 
-def build_project_entries(items):
+def build_project_entries(items, job_description):   
     entries = []
-
-    # fetch all project information and tag information
     with get_session() as session:
         orms = session.query(ProjectORM).filter(ProjectORM.degree_id.isnot(None)).all()
-    
-    # group items to highlights
+
     for project in orms:
         highlights = [
             item["description"] for item in items if item["group_key"] == project.project_id
         ]
         if highlights:
             tags = _match_tags([project.project_id], ['tool'])
-            tools = ', '.join([tag.tag_name for i, tag in enumerate(tags) if i < 3]) # how to make sure top-K tags are what I want
+            tag_names = [tag.tag_name for tag in tags]
+            top_tools = top_k_tags_by_jd(tag_names, job_description, k=3)   # <-- JD-relevant top-3
+            tools = ', '.join(top_tools)
             entries.append({
                 "name": project.project_name,
                 "tools": tools,
@@ -253,11 +253,11 @@ def build_cv_blocks(
     name,
     headline,
     info,
-    networks_entries, 
-    summary_entry,
-    # skills_entries, 
-    experience_entries, 
-    education_entries, 
+    # networks_entries, 
+    # summary_entry,
+    skills_entries, 
+    # experience_entries, 
+    # education_entries, 
     project_entries, 
     cv_yaml_path,
 ):
@@ -270,14 +270,14 @@ def build_cv_blocks(
         "phone": phone,
         "location": location,
     }
-    if networks_entries:
-        cv_block["social_networks"] = networks_entries
+    # if networks_entries:
+    #     cv_block["social_networks"] = networks_entries
 
     sections = {}
-    sections["summary"] = summary_entry
-    # sections["skills"] = skills_entries
-    sections["experience"] = experience_entries
-    sections["education"] = education_entries
+    # sections["summary"] = summary_entry
+    sections["skills"] = skills_entries
+    # sections["experience"] = experience_entries
+    # sections["education"] = education_entries
     if project_entries:
         sections["projects"] = project_entries
 
@@ -288,10 +288,10 @@ def build_cv_blocks(
     with open(cv_yaml_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(cv_content, f, allow_unicode=True, sort_keys=False)
 
-    print(
-        f"Generated {cv_yaml_path} with {len(experience_entries)} experience entries, "
-        f"{len(project_entries)} project entries, and {len(education_entries)} education entries."
-    )
+    # print(
+    #     f"Generated {cv_yaml_path} with {len(experience_entries)} experience entries, "
+    #     f"{len(project_entries)} project entries, and {len(education_entries)} education entries."
+    # )
 
 
 def build_cv_pdf_path(name: str, job_title: str, company_name: str) -> pathlib.Path:
@@ -330,6 +330,7 @@ def render_pdf(
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         typst_path = pathlib.Path(tmp_dir) / f"{pdf_path.stem}.typ"
+
         cmd = [
             "rendercv", "render", str(cv_yaml_path),
             "--settings", str(settings_path),
@@ -377,7 +378,7 @@ def generate_cv(
     cv_yaml_path = pdf_path.parent / "cv.yaml"
 
     # build networks
-    networks_entries = build_network_entries(job_description)
+    # networks_entries = build_network_entries(job_description)
 
     # select claims
     selected = select_claims(job_description)
@@ -393,24 +394,24 @@ def generate_cv(
     rewritten = rewrite_and_confirm(narrowed, contexts, job_description)
 
     # build others
-    experience_entries = build_experience_entries(rewritten, job_description)
-    project_entries = build_project_entries(rewritten)
-    education_entries = build_education_entries(rewritten, job_description)
-    # skills_entries = build_skill_entries(rewritten, job_description)
-    summary_entry = build_summary_entry(experience_entries, project_entries, education_entries, job_description)
+    # experience_entries = build_experience_entries(rewritten, job_description)
+    project_entries = build_project_entries(rewritten, job_description)
+    # education_entries = build_education_entries(rewritten, job_description)
+    skills_entries = build_skill_entries(rewritten, job_description)
+    # summary_entry = build_summary_entry(experience_entries, project_entries, education_entries, job_description)
 
     # build cv blocks
     build_cv_blocks(
-        name,
-        headline,
-        info,
-        networks_entries, 
-        summary_entry,
-        # skills_entries, 
-        experience_entries, 
-        education_entries, 
-        project_entries, 
-        cv_yaml_path,
+        name=name,
+        headline=headline,
+        info=info,
+        # networks_entries=networks_entries, 
+        # summary_entry=summary_entry,
+        skills_entries=skills_entries, 
+        # experience_entries=experience_entries, 
+        # education_entries=education_entries, 
+        project_entries=project_entries, 
+        cv_yaml_path=cv_yaml_path,
     )
 
     # render cv
