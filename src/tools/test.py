@@ -13,8 +13,8 @@ with get_session() as session:
     if job is None:
         raise SystemExit("Job not found.")
 
-    job_description = job.job_description  # capture before leaving the session block
-    selected = select_claims(session, job_description)
+job_description = job.job_description  # capture before leaving the session block
+selected = select_claims(job_description)
 
 if not selected["work_track"] and not selected["academic_track"]:
     raise SystemExit("No claims selected for this job -- pick a different job to test with.")
@@ -24,9 +24,11 @@ final_items = narrow_all_claims(selected, job_description, log_path="/Users/yahs
 if not final_items:
     raise SystemExit("No items survived narrowing -- nothing to rewrite.")
 
-rewritten = rewrite_and_confirm(final_items, selected, job.job_description)
+rewritten = rewrite_and_confirm(final_items, selected, job_description)
 
 print("\n=== Final rewritten bullets ===")
-for item in rewritten:
-    # print(f"[{item['track']}] {item['group_label']} ({item['kind']}): {item['description']}")
-    print(item)
+import json
+with open("/Users/yahsintsai/Downloads/example.txt", "w", encoding="utf-8") as f:
+    # for item in rewritten:
+        # print(f"[{item['track']}] {item['group_label']} ({item['kind']}): {item['description']}")
+    json.dump(rewritten, f)

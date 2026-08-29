@@ -88,13 +88,14 @@ def _parse_relevant_indices(raw_response: str) -> set[int]:
 def select_claims(job_description: str) -> list[str]:
 
     # contexts: all allowed claims with attributes
-    rows = (
-        get_session().execute(
-            text(SQL_QUERY),
-        ).mappings().all()
-    )
+    with get_session() as session:
+        rows = (
+            session.execute(
+                text(SQL_QUERY),
+            ).mappings().all()
+        )
     if not rows:
-        return None, None
+        return None
 
     contexts = [dict(row) for row in rows]
 

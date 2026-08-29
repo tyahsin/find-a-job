@@ -2,6 +2,8 @@
 .env
 /db/data
 /db/init/003_seed_data.sql
+/db/dev-entrypoint.sh
+compose.dev.yaml
 **/__pycache__/
 /venv
 /venv312

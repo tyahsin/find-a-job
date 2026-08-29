@@ -2,7 +2,6 @@
 gencv/resume_builder.py
 """
 
-from collections import defaultdict
 import pathlib
 import subprocess
 import sys
@@ -11,202 +10,186 @@ import yaml
 from core.config import get_cv_config
 from core.db import (
     get_session, 
-    MetricORM, ClaimTagORM, TagORM, ClaimORM, ActionORM, ProblemORM, ProjectORM, CompanyORM, SchoolORM, PositionORM, JobORM
+    DegreeORM, ClaimTagORM, TagORM, ClaimORM, ActionORM, ProblemORM, ProjectORM, CompanyORM, SchoolORM, PositionORM, JobORM, IdentityORM, NetworkORM
 )
 from gencv.claim_selector import select_claims
 from gencv.claim_ranker import narrow_all_claims
 from gencv.claim_rewriter import rewrite_and_confirm
-from gencv.experience_matcher import fetch_experience_contexts, to_uuid_list
+# from gencv.network_selector import select_networks_from_jd
+from gencv.degree_selector import judge_orphan_degrees
 from gencv.skill_grouper import group_skills_for_jd
-from gencv.identity_selector import select_identity_from_jd, select_networks_from_jd
-from gencv.education_selector import select_relevant_degrees
 from gencv.summary_writer import write_summary
 
 
 TEMPLATES_DIR = pathlib.Path(__file__).parent / "templates"
 
-def build_identity_entry(job_description, designated_name=None):
-    identity = select_identity_from_jd(job_description)
+
+def build_identity_entry(job_location, designated_name=None):
+    with get_session() as session:
+        identity = (
+            session.query(IdentityORM).
+            filter(IdentityORM.location.like(f"%{job_location.split(',')[-1]}")). # same country
+            one_or_none()
+        )
+        if not identity:
+            identity = (
+                session.query(IdentityORM).
+                filter(IdentityORM.is_default == True). # default identity
+                one_or_none()
+            )
     name = identity.name if designated_name is None else designated_name
     visa_status = identity.visa_status if 'citizenship' not in str.lower(identity.visa_status) else None
     return name, identity.email, identity.phone, identity.location, visa_status
 
+
 def build_network_entries(job_description):
-    networks = select_networks_from_jd(job_description)
-    return [
-        {"network": n.network, "username": n.username}
-        for n in networks
-    ]
+    # networks = select_networks_from_jd(job_description)
+    # return [
+    #     {"network": n.network, "username": n.username}
+    #     for n in networks
+    # ]
+    with get_session() as session:
+        network = session.query(NetworkORM).filter(NetworkORM.network=='LinkedIn').one_or_none()
+        return [{"network": network.network, "username": network.username}]
 
-def build_experience_entries(session, claim_ids, description_overrides=None):
-    contexts = fetch_experience_contexts(session, claim_ids)
-    description_overrides = description_overrides or {}
 
-    work_claim_ids = [cid for cid in claim_ids if contexts.get(cid, {}).get("is_work_track")]
 
-    metrics_by_claim = defaultdict(list)
-    if work_claim_ids:
-        metric_rows = (
-            session.query(MetricORM)
-            .filter(MetricORM.claim_id.in_(to_uuid_list(work_claim_ids)))
+def build_experience_entries(items):
+    entries = []
+
+    # fetch all position information joined by company information
+    with get_session() as session:
+        orms = (
+            session.query(CompanyORM, PositionORM).
+            join(PositionORM, PositionORM.company_id==CompanyORM.company_id).
+            all()
+        )
+
+    # group items to highlights
+    for company, position in orms:
+        highlights = [
+            item["description"] for item in items if item["group_key"] == position.position_id
+        ]
+        if highlights:        
+            entries.append({
+                "company": company.company_name,
+                "position": position.title,
+                "location": company.location,
+                "highlights": highlights,
+                "start_date": str(position.start_date),
+                "end_date": str(position.end_date) if position.end_date else "present"
+            })
+        # how to deal with the gap of jobs after selection especially when there's XChange
+        else:
+            entries.append({
+                "company": company.company_name,
+                "position": position.title,
+                "location": company.location,
+                "summary": position.responsibility,
+                "start_date": str(position.start_date),
+                "end_date": str(position.end_date) if position.end_date else "present"
+            })
+
+    entries.sort(key=lambda e: e.get("start_date", ""), reverse=True)
+    return entries
+
+
+def _match_tags(project_ids, tag_category):
+    with get_session() as session:
+        return (
+            session.query(TagORM)
+            .join(ClaimTagORM, ClaimTagORM.tag_id == TagORM.tag_id)
+            .join(ClaimORM, ClaimORM.claim_id == ClaimTagORM.claim_id)
+            .join(ActionORM, ActionORM.action_id == ClaimORM.action_id)
+            .join(ProblemORM, ProblemORM.problem_id == ActionORM.problem_id)
+            .join(ProjectORM, ProjectORM.project_id == ProblemORM.project_id)
+            .filter(ProjectORM.project_id.in_(project_ids))
+            .filter(TagORM.tag_category.in_(tag_category))
             .all()
         )
-        for m in metric_rows:
-            metrics_by_claim[str(m.claim_id)].append(m)
 
-    grouped = defaultdict(list)
 
-    for claim_id in work_claim_ids:
-        ctx = contexts.get(claim_id)
-        if not ctx:
-            continue
-        key = (ctx["org_name"], ctx["title"], ctx["start_date"], ctx["end_date"])
-        highlight = description_overrides.get(claim_id, ctx["claim_description"])
-        grouped[key].append(highlight)
+def build_project_entries(items):
+    entries = []
 
-    claim_backed_keys = set(grouped.keys())
+    # fetch all project information and tag information
+    with get_session() as session:
+        orms = session.query(ProjectORM).filter(ProjectORM.degree_id.isnot(None)).all()
+    
+    # group items to highlights
+    for project in orms:
+        highlights = [
+            item["description"] for item in items if item["group_key"] == project.project_id
+        ]
+        if highlights:
+            tags = _match_tags([project.project_id], ['tool'])
+            tools = ', '.join([tag.tag_name for i, tag in enumerate(tags) if i < 3]) # how to make sure top-K tags are what I want
+            entries.append({
+                "name": project.project_name,
+                "tools": tools,
+                "summary": project.project_context,
+                "highlights": highlights,
+                "start_date": str(project.start_date),
+                "end_date": str(project.end_date) if project.end_date else "present"
+            })
 
-    # 補上沒有任何選中 claim 的 position -- 用 summary 呈現，不是 highlights。
-    fallback_summaries = {}
-    all_positions = session.query(PositionORM).all()
-    for position in all_positions:
-        company_name = (
-            session.query(CompanyORM.company_name)
-            .filter(CompanyORM.company_id == position.company_id)
-            .scalar()
+    entries.sort(key=lambda e: e.get("start_date", ""), reverse=True)
+    return entries
+
+
+def build_education_entries(items, job_description): 
+    entries = []
+
+    # fetch all degree information joined by school information
+    with get_session() as session:
+        orms = (
+            session.query(SchoolORM, DegreeORM, ProjectORM).
+            join(SchoolORM, SchoolORM.school_id==DegreeORM.school_id).
+            join(ProjectORM, ProjectORM.degree_id==DegreeORM.degree_id).
+            all()
         )
-        key = (company_name, position.title, position.start_date, position.end_date)
-        if key in claim_backed_keys:
-            continue  # 已經有選中的 claim 覆蓋這個 position
-        if not position.responsibility:
-            continue  # 沒有 responsibility 可用，不硬塞空內容
-        fallback_summaries[key] = position.responsibility
 
-    entries = []
-
-    for (org_name, title, start_date, end_date), highlights in grouped.items():
-        entry = {
-            "company": org_name,
-            "position": title,
-            "location": session.query(CompanyORM.location).filter(CompanyORM.company_name == org_name).scalar(),
-            "highlights": highlights,
-        }
-        if start_date:
-            entry["start_date"] = str(start_date)
-            entry["end_date"] = str(end_date) if end_date else "present"
-        entries.append(entry)
-
-    for (org_name, title, start_date, end_date), summary in fallback_summaries.items():
-        entry = {
-            "company": org_name,
-            "position": title,
-            "location": session.query(CompanyORM.location).filter(CompanyORM.company_name == org_name).scalar(),
-            "summary": summary,
-        }
-        if start_date:
-            entry["start_date"] = str(start_date)
-            entry["end_date"] = str(end_date) if end_date else "present"
-        entries.append(entry)
-
-    entries.sort(key=lambda e: e.get("start_date", ""), reverse=True)
-    return entries
-
-
-def build_project_entries(session, claim_ids, description_overrides=None):
-    """依 claim_id 清單取得完整背景，篩出 EDUCATION TRACK（is_work_track=False）
-    子集，依 project_name 分組，組成 rendercv ProjectEntry 清單。"""
-    contexts = fetch_experience_contexts(session, claim_ids)
-    description_overrides = description_overrides or {}
-
-    project_claim_ids = [cid for cid in claim_ids if not contexts.get(cid, {}).get("is_work_track")]
-
-    if not project_claim_ids:
-        return []
-
-    grouped = defaultdict(list)
-
-    for claim_id in project_claim_ids:
-        ctx = contexts.get(claim_id)
-        if not ctx:
-            continue
-
-        tag_rows = (
-                session.query(TagORM)
-                .join(ClaimTagORM, ClaimTagORM.tag_id == TagORM.tag_id)
-                .join(ClaimORM, ClaimORM.claim_id == ClaimTagORM.claim_id)
-                .join(ActionORM, ActionORM.action_id == ClaimORM.action_id)
-                .join(ProblemORM, ProblemORM.problem_id == ActionORM.problem_id)
-                .join(ProjectORM, ProjectORM.project_id == ProblemORM.project_id)
-                .filter(ProjectORM.project_name==ctx["project_name"])
-                .filter(TagORM.tag_category == "tool")
-                .all()
-            )
-        tools = ', '.join([tag.tag_name for i, tag in enumerate(tag_rows) if i < 3])
-        
-        key = (ctx["project_name"], ctx["start_date"], ctx["end_date"], ctx["project_context"], tools)
-        highlight = description_overrides.get(claim_id, ctx["claim_description"])
-
-        grouped[key].append(highlight)
-
-    entries = []
-    for (project_name, start_date, end_date, project_context, tools), highlights in grouped.items():
-        entry = {
-            "name": project_name,
-            "tools": tools,
-            "summary": project_context,
-            "highlights": highlights,
-        }
-        if start_date:
-            entry["start_date"] = str(start_date)
-            entry["end_date"] = str(end_date) if end_date else "present"
-        entries.append(entry)
-
-    entries.sort(key=lambda e: e.get("start_date", ""), reverse=True)
-    return entries
-
-
-def build_education_entries(session, relevant_degrees): 
-    """把 education_selector.select_relevant_degrees() 選出的 DegreeORM 清單
-    直接組成 education section，不再額外篩選。只放
-    institution/area/degree/start_date/end_date。排序依 start_date 倒序。"""
-    if not relevant_degrees:
-        return []
-
-    entries = []
-    for degree in relevant_degrees:
-        entry = {
-            "institution": session.query(SchoolORM.school_name).filter(SchoolORM.school_id==degree.school_id).scalar(),
+    # group items to highlights
+    chosen = set([item["group_key"] for item in items if item["is_work_tack"] is False])
+    for school, degree, project in orms:
+        if project.project_id not in chosen:
+            is_relevant = judge_orphan_degrees([degree], job_description)
+            if is_relevant[0] != 0: # change this from list to boolean
+                continue
+        highlights = degree.degree_honors + degree.degree_awards # haven't done thesis and others but better do that
+        entries.append({
+            "institution": school.school_name,
             "area": degree.degree_name,
-            "location": session.query(SchoolORM.location).filter(SchoolORM.school_id==degree.school_id).scalar(),
-        }
-        if degree.degree_level:
-            entry["degree"] = degree.degree_level
-        if degree.start_date:
-            entry["start_date"] = str(degree.start_date)
-            entry["end_date"] = str(degree.end_date) if degree.end_date else "present"
-        entries.append(entry)
+            "location": school.location,
+            "degree": degree.degree_level,
+            "highlights": highlights, # honors and awards
+            "start_date": str(degree.start_date),
+            "end_date": str(degree.end_date) if degree.end_date else "present"
+        })
 
     entries.sort(key=lambda e: e.get("start_date", ""), reverse=True)
     return entries
 
 
-def build_skill_entries(session, claim_ids, job_description):
-    """從關聯的標籤中取得 tag_name，交給 skill_grouper.group_skills_for_jd()
-    依這份 JD 重新分組（上限4組，含未分類 tag 的互動式指派、以及新增分組的
-    互動指令），輸出 rendercv OneLineEntry 清單。
-    """
-    # if not claim_ids:
-    #     return []
+def build_skill_entries(items, job_description):
 
-    tag_rows = (
-        session.query(TagORM)
-        .join(ClaimTagORM, ClaimTagORM.tag_id == TagORM.tag_id)
-        # .filter(ClaimTagORM.claim_id.in_(to_uuid_list(claim_ids)))
-        # .filter(TagORM.tag_category.in_(["tool", "capability"]))
-        .join(GovernanceORM, GovernanceORM.claim_id == ClaimTagORM.claim_id)
-        .filter(GovernanceORM.allowed_for_generation == True)
-        .all()
-    )
+    # find all project information joined by position information
+    project_ids = []
+    with get_session() as session:
+        orms = (
+            session.query(ProjectORM.position_id, ProjectORM.project_id).
+            filter(ProjectORM.position_id.isnot(None)).
+            all()
+        )
+    group_key_map = {orm.position_id: orm.project_id for orm in orms}
+    for item in items:
+        if item["is_work_track"] is False: # group_key is project_id
+            project_ids.append(item["group_key"])
+        else: # group_key is position_id
+            if item["group_key"] in group_key_map and item["group_key"] not in project_ids: # 1 position may have N projects
+                project_ids.append(group_key_map[item["group_label"]])
+
+    tag_rows = _match_tags(project_ids, ['tool', 'capability'])
 
     seen_tags = set()
     tags_with_category = []
@@ -226,23 +209,61 @@ def build_skill_entries(session, claim_ids, job_description):
         if tags
     ]
 
-def build_summary_entry(experience_entries, project_entries, education_entries, job_description):
-    """組裝 summary section 所需素材，呼叫 summary_writer 進行 LLM 草擬 + 人工確認。
 
-    (本輪變更) 拿掉原本的 domain/job_function 輔助訊號 -- tag_category 改版
-    成 tool/capability/context 三軸後，舊訊號已無對應資料來源；改用
-    skills_entries 頂替又會跟 skills section 內容重複曝光。權衡之下直接
-    拿掉這個訊號：final_bullets + education_entries 已是履歷資訊量最大的
-    兩塊，輔助訊號本來就是 non-forced 的錦上添花，拿掉不影響 summary 的
-    核心品質，換來簽名更簡單、不必為了一個弱訊號多查一次 DB 或製造重複。
-    """
+def build_summary_entry(experience_entries, project_entries, education_entries, job_description):
     bullets = [
         h for entry in experience_entries for h in entry.get("highlights", [])
     ] + [
         h for entry in project_entries for h in entry.get("highlights", [])
     ]
 
-    return write_summary(job_description, bullets, education_entries)
+    return [write_summary(job_description, bullets, education_entries)]
+
+
+def build_cv_blocks(
+    name,
+    headline,
+    info,
+    networks_entries, 
+    summary_entry,
+    skills_entries, 
+    experience_entries, 
+    education_entries, 
+    project_entries, 
+    cv_yaml_path,
+):
+    email, phone, location, visa_status = info
+    
+    cv_block = {
+        "name": name,
+        "headline": f"{headline}" if visa_status is None else f"{headline} ({visa_status})",
+        "email": email,
+        "phone": phone,
+        "location": location,
+    }
+    if networks_entries:
+        cv_block["social_networks"] = networks_entries
+
+    sections = {}
+    sections["summary"] = summary_entry
+    sections["skills"] = skills_entries
+    sections["experience"] = experience_entries
+    sections["education"] = education_entries
+    if project_entries:
+        sections["projects"] = project_entries
+
+    cv_block["sections"] = sections
+
+    cv_content = {"cv": cv_block}
+
+    with open(cv_yaml_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cv_content, f, allow_unicode=True, sort_keys=False)
+
+    print(
+        f"Generated {cv_yaml_path} with {len(experience_entries)} experience entries, "
+        f"{len(project_entries)} project entries, and {len(education_entries)} education entries."
+    )
+
 
 def build_cv_pdf_path(name: str, job_title: str, company_name: str) -> pathlib.Path:
     cv_config = get_cv_config()
@@ -275,7 +296,7 @@ def render_pdf(
     for file in [cv_yaml_path, design_path, locale_path, settings_path]:
         print(file)
         if not file.exists():
-            print(f"[ERROR] 找不到檔案: {file}", file=sys.stderr)
+            print(f"[ERROR] File not found: {file}", file=sys.stderr)
             sys.exit(1)
 
     cmd = [
@@ -313,10 +334,11 @@ def generate_cv(
     company_name = job.company_name
     job_title = job.job_title
     headline = job_title if designated_headline is None else designated_headline
+    job_location = job.job_location
     job_description = job.job_description
 
     # build identity & basic information
-    name, email, phone, location, visa_status = build_identity_entry(job_description, designated_name)
+    name, *info = build_identity_entry(job_location, designated_name)
     pdf_path = build_cv_pdf_path(name, job_title, company_name)
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
     log_path = pdf_path.parent / "claim_ranker.log"
@@ -339,44 +361,25 @@ def generate_cv(
     rewritten = rewrite_and_confirm(final_items, selected, job_description)
 
     # build others
-    # with get_session() as session:
-    #     experience_entries = build_experience_entries(session, claim_ids, description_overrides)
-    #     project_entries = build_project_entries(session, claim_ids, description_overrides)
-    #     relevant_degrees = select_relevant_degrees(session, claim_ids, job_description)
-    #     education_entries = build_education_entries(session, relevant_degrees)
-    #     # skills_entries = build_skill_entries(session, claim_ids, job_description)
-    # summary_entry = build_summary_entry(experience_entries, project_entries, education_entries, job_description)
+    experience_entries = build_experience_entries(rewritten)
+    project_entries = build_project_entries(rewritten)
+    education_entries = build_education_entries(rewritten, job_description)
+    skills_entries = build_skill_entries(rewritten, job_description)
+    summary_entry = build_summary_entry(experience_entries, project_entries, education_entries, job_description)
 
     # build cv blocks
-    cv_block = {
-        "name": name,
-        "headline": f"{headline}" if visa_status is None else f"{headline} ({visa_status})",
-        "email": email,
-        "phone": phone,
-        "location": location,
-    }
-    if networks_entries:
-        cv_block["social_networks"] = networks_entries
-
-    sections = {}
-    # sections["summary"] = [summary_entry]
-    # # sections["skills"] = skills_entries
-    # sections["experience"] = experience_entries
-    # sections["education"] = education_entries
-    # if project_entries:
-    #     sections["projects"] = project_entries
-
-    cv_block["sections"] = sections
-
-    cv_content = {"cv": cv_block}
-
-    with open(cv_yaml_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cv_content, f, allow_unicode=True, sort_keys=False)
-
-    # print(
-    #     f"Generated {cv_yaml_path} with {len(experience_entries)} experience entries, "
-    #     f"{len(project_entries)} project entries, and {len(education_entries)} education entries."
-    # )
+    build_cv_blocks(
+        name,
+        headline,
+        info,
+        networks_entries, 
+        summary_entry,
+        skills_entries, 
+        experience_entries, 
+        education_entries, 
+        project_entries, 
+        cv_yaml_path,
+    )
 
     # render cv
     render_pdf(pdf_path=pdf_path)

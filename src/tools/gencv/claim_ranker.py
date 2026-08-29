@@ -572,4 +572,4 @@ def narrow_all_claims(selected, job_description, log_path=None):
         selected["academic_track"], contexts, job_description, avoid_note, log_path=log_path
     )
 
-    return work_items + degree_items, contexts
+    return work_items + degree_items

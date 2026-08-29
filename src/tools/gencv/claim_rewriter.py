@@ -43,6 +43,8 @@ one SQL query -- don't add a second DB round trip here.
 English-only prompts and output, per the project-wide LANGUAGE POLICY.
 """
 
+import json
+import re
 from collections import defaultdict
 
 from core.llm_client import get_llm_client
@@ -115,9 +117,12 @@ Strict rules (must follow):
     only the fields that ARE provided.
 14. Output must be in English, regardless of the input language.
 
-Output format: one fused, JD-tailored bullet sentence per RECORD (not per
-sub-record), in the same order as given, separated by the delimiter "|||"
-(three pipe characters). No numbering, no preamble, no explanation."""
+Output format: output ONLY a valid JSON object mapping each record's number
+(as a STRING key, e.g. "1", "2") to its fused, JD-tailored bullet sentence
+-- one entry per RECORD (not per sub-record), covering EVERY record number
+shown to you, exactly once each. No preamble, no explanation, no markdown
+code fences.
+Example shape (illustrative only, not real content): {{"1": "Redesigned the onboarding flow, reducing drop-off by 18%.", "2": "Implemented an automated testing pipeline, cutting deploy time by 40%."}}"""
 
 REWRITE_USER_PROMPT_TEMPLATE = """# Job Description
 {job_description}
@@ -125,7 +130,7 @@ REWRITE_USER_PROMPT_TEMPLATE = """# Job Description
 # Records to fuse and tailor ({count} total, organized by group)
 {records_block}
 
-Output {count} fused, JD-tailored bullet sentences, one per record, in the same order as given above, separated by |||:"""
+Output a JSON object with exactly {count} entries, one fused, JD-tailored bullet sentence per record number ("1" through "{count}"):"""
 
 REGENERATE_SYSTEM_PROMPT = """You are a resume bullet-point writer. You previously fused a record's source
 material into one bullet-point sentence tailored to a job description. The
@@ -287,16 +292,58 @@ def _build_batch_prompt(items, contexts, job_description):
 
 
 def _parse_batch_response(raw_response, expected_count):
-    parts = [p.strip() for p in raw_response.split("|||")]
-    if len(parts) < expected_count:
-        parts += [""] * (expected_count - len(parts))
-    return parts[:expected_count]
+    """Parses the LLM's JSON object ({"1": "...", "2": "...", ...}) into an
+    ordered list of `expected_count` bullet strings (index i = record i+1).
+    Unlike the old "|||".split() approach, a structural mismatch (missing
+    record number, extra/unexpected key, unparseable JSON) is DETECTED and
+    reported here rather than silently shifting every later record's
+    bullet into the wrong slot -- any record that couldn't be recovered
+    gets "" (the caller's existing empty-string fallback path in
+    _confirm_item already handles that per-record, requiring the human to
+    accept the raw-source fallback or manually override just that one
+    record, instead of the whole batch being silently misaligned)."""
+    cleaned = raw_response.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.MULTILINE).strip()
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        print(
+            f"  [Notice] Could not parse the LLM's batch response as JSON ({exc}) -- "
+            f"every record in this batch will fall back to its raw source text; "
+            f"you can 'r'/'o' individual records afterward."
+        )
+        return [""] * expected_count
+
+    if not isinstance(parsed, dict):
+        print(
+            "  [Notice] LLM's batch response was valid JSON but not an object "
+            "(expected {\"1\": \"...\", ...}) -- every record in this batch will "
+            "fall back to its raw source text."
+        )
+        return [""] * expected_count
+
+    expected_keys = {str(i) for i in range(1, expected_count + 1)}
+    got_keys = set(parsed.keys())
+    missing = expected_keys - got_keys
+    extra = got_keys - expected_keys
+    if missing or extra:
+        print(
+            f"  [Notice] Batch response key mismatch -- missing: {sorted(missing) or 'none'}, "
+            f"unexpected: {sorted(extra) or 'none'}. Missing records fall back to raw source "
+            f"text; unexpected keys are ignored."
+        )
+
+    return [str(parsed.get(str(i), "")).strip() for i in range(1, expected_count + 1)]
 
 
 def _draft_fused_bullets(items, contexts, job_description):
+    print(items)
     if not items:
         return {}
     user_prompt, ordered_items = _build_batch_prompt(items, contexts, job_description)
+    print(user_prompt)
+    print(ordered_items)
     if not ordered_items:
         return {}
     response = get_llm_client().generate_text(
