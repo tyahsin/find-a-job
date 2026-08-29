@@ -1,4 +1,6 @@
-# claim_ranker.py
+"""
+gencv/claim_ranker.py
+"""
 
 from core.llm_client import get_llm_client
 from core.llm_reviewer import confirm_decision, parse_decision_text, GroupDecision
@@ -572,4 +574,4 @@ def narrow_all_claims(selected, job_description, log_path=None):
         selected["academic_track"], contexts, job_description, avoid_note, log_path=log_path
     )
 
-    return work_items + degree_items
+    return work_items + degree_items, contexts

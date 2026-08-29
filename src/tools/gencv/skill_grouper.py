@@ -1,31 +1,5 @@
 """
 skill_grouper.py
-Version: v3 (2026-08-19)
-
-Changelog:
-- v3 (2026-08-19): Migrated the REGENERATE gate in confirm_skill_grouping()
-  to the shared core.llm_reviewer.parse_review_input() parser -- same
-  single-line command contract as experience_rewriter.py v6 /
-  claim_ranker.py v3 / summary_writer.py v3: 'r' or 'r <text>' to
-  regenerate (previously a two-step prompt). Plain 'o' with no text, or
-  any unrecognized input, is now explicitly invalid and re-prompts with
-  an error. Regeneration semantics (wholesale replacement of the current
-  draft grouping, discarding any manual edits made so far in this
-  session, warning displayed before proceeding) are UNCHANGED from v2.
-- v2 (2026-08-19): Added a REGENERATE option to confirm_skill_grouping()'s
-  confirmation gate -- see prior changelog entry for full rationale
-  (two-step prompt flow, since replaced in v3 above).
-- v1 (2026-08-16): Initial version. Presentation-layer regrouping of
-  already-confirmed tags into JD-appropriate resume skill-section groups
-  (max 4 groups), with mandatory human confirmation, interactive
-  unplaced-tag resolution (no automatic "Other" bucket), and an
-  interactive add-new-group step.
-
-Safety rules (unchanged): the LLM may ONLY re-bucket existing tag_name
-strings into new group labels -- it may NOT invent, rename, merge the
-text of, or drop any tag_name.
-
-English-only prompts and output, per the project-wide LANGUAGE POLICY.
 """
 
 from __future__ import annotations

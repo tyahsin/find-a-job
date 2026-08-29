@@ -338,12 +338,9 @@ def _parse_batch_response(raw_response, expected_count):
 
 
 def _draft_fused_bullets(items, contexts, job_description):
-    print(items)
     if not items:
         return {}
     user_prompt, ordered_items = _build_batch_prompt(items, contexts, job_description)
-    print(user_prompt)
-    print(ordered_items)
     if not ordered_items:
         return {}
     response = get_llm_client().generate_text(
@@ -405,7 +402,7 @@ def _confirm_item(item, contexts, job_description, index, total, drafted):
     current_draft = drafted
 
     while True:
-        print(f"  Fused & JD-tailored bullet: {current_draft}")
+        print(f"  {current_draft}")
 
         if original.strip() == current_draft.strip():
             print("  (Fused result is identical to the original -- using as-is)")
@@ -429,7 +426,7 @@ def _confirm_item(item, contexts, job_description, index, total, drafted):
             return decision.value
 
         if decision.action == "accept":
-            print("  -> Using fused & tailored bullet")
+            print("  -> Using LLM-(re)generated bullet")
             return current_draft
 
         print(f"  [Error] {decision.value}")

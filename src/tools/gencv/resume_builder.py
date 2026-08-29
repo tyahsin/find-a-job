@@ -6,6 +6,8 @@ import pathlib
 import subprocess
 import sys
 import yaml
+from datetime import date
+import tempfile
 
 from core.config import get_cv_config
 from core.db import (
@@ -16,7 +18,7 @@ from gencv.claim_selector import select_claims
 from gencv.claim_ranker import narrow_all_claims
 from gencv.claim_rewriter import rewrite_and_confirm
 # from gencv.network_selector import select_networks_from_jd
-from gencv.degree_selector import judge_orphan_degrees
+from gencv.orphan_selector import judge_orphan_positions, judge_orphan_degrees
 from gencv.skill_grouper import group_skills_for_jd
 from gencv.summary_writer import write_summary
 
@@ -38,7 +40,7 @@ def build_identity_entry(job_location, designated_name=None):
                 one_or_none()
             )
     name = identity.name if designated_name is None else designated_name
-    visa_status = identity.visa_status if 'citizenship' not in str.lower(identity.visa_status) else None
+    visa_status = identity.visa_status if identity.visa_status and 'citizenship' not in str.lower(identity.visa_status) else None
     return name, identity.email, identity.phone, identity.location, visa_status
 
 
@@ -53,43 +55,57 @@ def build_network_entries(job_description):
         return [{"network": network.network, "username": network.username}]
 
 
-
-def build_experience_entries(items):
+def build_experience_entries(items, job_description):
     entries = []
+
+    def _add_entry(company, position):
+        entries.append({
+            "company": company.company_name,
+            "position": position.title,
+            "location": company.location,
+            "start_date": str(position.start_date),
+            "end_date": str(position.end_date) if position.end_date else "present"
+        })
+
+    def _positions_overlap(pos_a, pos_b):
+        end_a = pos_a.end_date or date.max
+        end_b = pos_b.end_date or date.max
+        return pos_a.start_date <= end_b and pos_b.start_date <= end_a        
 
     # fetch all position information joined by company information
     with get_session() as session:
         orms = (
             session.query(CompanyORM, PositionORM).
             join(PositionORM, PositionORM.company_id==CompanyORM.company_id).
+            order_by(PositionORM.start_date.desc()).
             all()
         )
 
     # group items to highlights
+    highlighted_positions, orphan_position_candidates = [], {}
     for company, position in orms:
         highlights = [
             item["description"] for item in items if item["group_key"] == position.position_id
         ]
-        if highlights:        
-            entries.append({
-                "company": company.company_name,
-                "position": position.title,
-                "location": company.location,
-                "highlights": highlights,
-                "start_date": str(position.start_date),
-                "end_date": str(position.end_date) if position.end_date else "present"
-            })
-        # how to deal with the gap of jobs after selection especially when there's XChange
+        if highlights:
+            _add_entry(company, position)
+            entries[-1]["highlights"] = highlights
+            highlighted_positions.append(position)
         else:
-            entries.append({
-                "company": company.company_name,
-                "position": position.title,
-                "location": company.location,
-                "summary": position.responsibility,
-                "start_date": str(position.start_date),
-                "end_date": str(position.end_date) if position.end_date else "present"
-            })
+            orphan_position_candidates[position] = company
 
+    # fetch orphan position
+    orphan_positions = {
+        position: company for position, company in orphan_position_candidates.items() if not any(_positions_overlap(position, hp) for hp in highlighted_positions) 
+    }
+
+    # judge orphan positions
+    judged_positions = judge_orphan_positions(list(orphan_positions.keys()), job_description)
+    if judged_positions:
+        for judged_position in judged_positions:
+            _add_entry(orphan_positions[judged_position], judged_position)
+            entries[-1]["summary"] = judged_position.responsibility
+        
     entries.sort(key=lambda e: e.get("start_date", ""), reverse=True)
     return entries
 
@@ -140,22 +156,7 @@ def build_project_entries(items):
 def build_education_entries(items, job_description): 
     entries = []
 
-    # fetch all degree information joined by school information
-    with get_session() as session:
-        orms = (
-            session.query(SchoolORM, DegreeORM, ProjectORM).
-            join(SchoolORM, SchoolORM.school_id==DegreeORM.school_id).
-            join(ProjectORM, ProjectORM.degree_id==DegreeORM.degree_id).
-            all()
-        )
-
-    # group items to highlights
-    chosen = set([item["group_key"] for item in items if item["is_work_tack"] is False])
-    for school, degree, project in orms:
-        if project.project_id not in chosen:
-            is_relevant = judge_orphan_degrees([degree], job_description)
-            if is_relevant[0] != 0: # change this from list to boolean
-                continue
+    def _add_entry(school, degree):
         highlights = degree.degree_honors + degree.degree_awards # haven't done thesis and others but better do that
         entries.append({
             "institution": school.school_name,
@@ -166,6 +167,34 @@ def build_education_entries(items, job_description):
             "start_date": str(degree.start_date),
             "end_date": str(degree.end_date) if degree.end_date else "present"
         })
+
+    # fetch all degree information joined by school information
+    with get_session() as session:
+        orms = (
+            session.query(SchoolORM, DegreeORM, ProjectORM.project_id)
+            .join(SchoolORM, SchoolORM.school_id == DegreeORM.school_id)
+            .join(ProjectORM, ProjectORM.degree_id == DegreeORM.degree_id)  # academic project related degree only
+            .all()
+        )
+
+    # channel degrees into chosen and not
+    chosen_projects = set([item["group_key"] for item in items if item["track"] == "degree"]) # project_id
+    chosen_degrees, orphan_degrees = [], {}
+    for school, degree, project_id in orms:
+        if project_id in chosen_projects:
+            if degree.degree_id not in chosen_degrees:
+                _add_entry(school, degree)
+                chosen_degrees.append(degree.degree_id)
+                orphan_degrees.pop(degree, None)  # to remove degree wrongly identified as orphan but actually has project chosen in the later orm records
+        else:
+            if degree.degree_id not in chosen_degrees and degree not in orphan_degrees:
+                orphan_degrees[degree] = school
+
+    # judge orphan degrees
+    judged_degrees = judge_orphan_degrees(list(orphan_degrees.keys()), job_description)
+    if judged_degrees:
+        for judged_degree in judged_degrees:
+            _add_entry(orphan_degrees[judged_degree], judged_degree)
 
     entries.sort(key=lambda e: e.get("start_date", ""), reverse=True)
     return entries
@@ -183,11 +212,11 @@ def build_skill_entries(items, job_description):
         )
     group_key_map = {orm.position_id: orm.project_id for orm in orms}
     for item in items:
-        if item["is_work_track"] is False: # group_key is project_id
+        if item["track"] == "degree": # group_key is project_id
             project_ids.append(item["group_key"])
         else: # group_key is position_id
             if item["group_key"] in group_key_map and item["group_key"] not in project_ids: # 1 position may have N projects
-                project_ids.append(group_key_map[item["group_label"]])
+                project_ids.append(group_key_map[item["group_key"]])
 
     tag_rows = _match_tags(project_ids, ['tool', 'capability'])
 
@@ -226,7 +255,7 @@ def build_cv_blocks(
     info,
     networks_entries, 
     summary_entry,
-    skills_entries, 
+    # skills_entries, 
     experience_entries, 
     education_entries, 
     project_entries, 
@@ -246,7 +275,7 @@ def build_cv_blocks(
 
     sections = {}
     sections["summary"] = summary_entry
-    sections["skills"] = skills_entries
+    # sections["skills"] = skills_entries
     sections["experience"] = experience_entries
     sections["education"] = education_entries
     if project_entries:
@@ -299,29 +328,32 @@ def render_pdf(
             print(f"[ERROR] File not found: {file}", file=sys.stderr)
             sys.exit(1)
 
-    cmd = [
-        "rendercv", "render", str(cv_yaml_path),
-        "--settings", str(settings_path),
-        "--design", str(design_path),
-        "--locale-catalog", str(locale_path),
-        "--pdf-path", str(pdf_path),
-    ]
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        typst_path = pathlib.Path(tmp_dir) / f"{pdf_path.stem}.typ"
+        cmd = [
+            "rendercv", "render", str(cv_yaml_path),
+            "--settings", str(settings_path),
+            "--design", str(design_path),
+            "--locale-catalog", str(locale_path),
+            "--pdf-path", str(pdf_path),
+            "--typst-path", str(typst_path),
+        ]
 
-    print("[INFO] Running:", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
+        print("[INFO] Running:", " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True)
 
-    if result.returncode != 0:
-        print("[ERROR] rendercv 執行失敗:", file=sys.stderr)
-        if result.stderr:
-            print("--- stderr ---", file=sys.stderr)
-            print(result.stderr, file=sys.stderr)
+        if result.returncode != 0:
+            print("[ERROR] rendercv 執行失敗:", file=sys.stderr)
+            if result.stderr:
+                print("--- stderr ---", file=sys.stderr)
+                print(result.stderr, file=sys.stderr)
+            if result.stdout:
+                print("--- stdout ---", file=sys.stderr)
+                print(result.stdout, file=sys.stderr)
+            sys.exit(result.returncode)
+
         if result.stdout:
-            print("--- stdout ---", file=sys.stderr)
-            print(result.stdout, file=sys.stderr)
-        sys.exit(result.returncode)
-
-    if result.stdout:
-        print(result.stdout)
+            print(result.stdout)
 
 
 def generate_cv(
@@ -353,18 +385,18 @@ def generate_cv(
         raise ValueError("篩選後沒有任何經歷通過（可能被治理層擋下，或 LLM 判定皆不相關）。")
 
     # rank claims
-    final_items = narrow_all_claims(selected, job_description, log_path)
-    if not final_items:
+    narrowed, contexts = narrow_all_claims(selected, job_description, log_path)
+    if not narrowed:
         raise ValueError("MECE narrowing 後沒有任何 item 留下，無法產生履歷內容。")
 
     # rewrite claims
-    rewritten = rewrite_and_confirm(final_items, selected, job_description)
+    rewritten = rewrite_and_confirm(narrowed, contexts, job_description)
 
     # build others
-    experience_entries = build_experience_entries(rewritten)
+    experience_entries = build_experience_entries(rewritten, job_description)
     project_entries = build_project_entries(rewritten)
     education_entries = build_education_entries(rewritten, job_description)
-    skills_entries = build_skill_entries(rewritten, job_description)
+    # skills_entries = build_skill_entries(rewritten, job_description)
     summary_entry = build_summary_entry(experience_entries, project_entries, education_entries, job_description)
 
     # build cv blocks
@@ -374,7 +406,7 @@ def generate_cv(
         info,
         networks_entries, 
         summary_entry,
-        skills_entries, 
+        # skills_entries, 
         experience_entries, 
         education_entries, 
         project_entries, 
